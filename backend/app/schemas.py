@@ -11,6 +11,7 @@ VehicleStatus = Literal["idle", "charging", "ready", "maintenance"]
 class TelemetryCreate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    event_id: str = Field(..., min_length=1, max_length=100)
     vehicle_id: str = Field(..., min_length=1, max_length=100)
     battery_percentage: float = Field(..., ge=0, le=100)
     status: VehicleStatus

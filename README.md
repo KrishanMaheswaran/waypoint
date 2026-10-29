@@ -1,6 +1,6 @@
 # Waypoint
 
-Waypoint is a portfolio-quality real-time fleet telemetry platform for backend and infrastructure engineering internships. Milestone 1 established the project foundation; Milestone 2 adds the telemetry API for vehicle state and recent historical events.
+Waypoint is a portfolio-quality real-time fleet telemetry platform for backend and infrastructure engineering internships. Milestone 3B adds idempotent telemetry ingestion, event ordering, and bounded simulator retries.
 
 ## Project structure
 
@@ -10,7 +10,7 @@ Waypoint is a portfolio-quality real-time fleet telemetry platform for backend a
 - `backend/app/models.py` – SQLAlchemy vehicle and telemetry models.
 - `backend/app/schemas.py` – Pydantic validation models for telemetry inputs and outputs.
 - `backend/app/routes.py` – FastAPI endpoints for telemetry ingestion and vehicle queries.
-- `backend/alembic/` – Alembic migration configuration and version files.
+- `backend/alembic/` – Alembic migration configuration and version files, including the telemetry idempotency migration.
 - `backend/tests/test_health.py` – pytest smoke test for `/health`.
 - `backend/tests/test_telemetry_api.py` – endpoint and database validation tests for Milestone 2.
 - `backend/requirements.txt` – Python dependencies for the backend.
@@ -135,7 +135,15 @@ The API URL, vehicle count, and interval (in seconds) can be overridden:
 ./simulator/build/waypoint-simulator --url http://localhost:8000 --vehicles 5 --interval 2
 ```
 
-Vehicle IDs are generated as `WP-1001`, `WP-1002`, and so on. Press Ctrl+C to stop. Connection failures and non-2xx API responses are logged, and the simulator continues sending subsequent events.
+Vehicle IDs are generated as `WP-1001`, `WP-1002`, and so on. Each event gets a UUID `event_id`; the simulator reuses that ID and the same JSON body for all retries of that event. Press Ctrl+C to stop. Connection failures, retry attempts, and final HTTP errors are logged.
+
+### Reliable ingestion behavior
+
+- Every `POST /telemetry` request must include a unique `event_id`. PostgreSQL enforces this with a unique constraint. The Alembic migration assigns UUIDs to existing rows before making the column non-null and unique, preserving existing telemetry.
+- Repeating an event ID with the identical vehicle, measurements, fault code, and timestamp returns HTTP 200 without adding a second history record. Reusing the ID for different event data returns HTTP 409.
+- Telemetry history retains valid events regardless of arrival order. The vehicle's current state changes only when an event timestamp is strictly newer than its current `last_updated` value; older events do not replace the latest state.
+- The simulator retries connection failures and HTTP 429/5xx responses up to three times after the initial attempt. Delays use full jitter from 0 to an exponentially increasing upper bound (500 ms, 1 s, 2 s; capped at 8 s). HTTP 4xx responses other than 429, including validation errors, are not retried. Connect, read, and write timeouts are each five seconds.
+- Retries with stable event IDs reduce duplicate event creation, but do not guarantee exactly-once delivery. A request can be accepted while its response is lost; callers should use the event ID to safely retry.
 
 ## API testing examples
 
@@ -145,6 +153,7 @@ Send a telemetry event:
 curl -X POST http://localhost:8000/telemetry \
   -H "Content-Type: application/json" \
   -d '{
+    "event_id": "0df306c9-cc18-49cb-9f75-51489f8f3d71",
     "vehicle_id": "VF-1001",
     "battery_percentage": 88.5,
     "status": "ready",
@@ -169,5 +178,5 @@ curl "http://localhost:8000/vehicles/VF-1001/telemetry?limit=20"
 ## Notes
 
 - PostgreSQL is configured through Docker Compose and environment variables from `.env`.
-- The project is intentionally kept minimal for Milestone 3A and does not include Kafka, Redis, frontend work, or production deployment.
+- The project intentionally does not include Kafka, Redis, frontend work, or production deployment.
 - If Docker or PostgreSQL is unavailable in the local environment, the Python tests still validate the API logic with SQLite-backed session overrides, but the actual Postgres integration itself remains unverified until Docker is available.

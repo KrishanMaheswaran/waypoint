@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -27,9 +27,13 @@ class Vehicle(Base):
 
 class TelemetryEvent(Base):
     __tablename__ = "telemetry_events"
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_telemetry_events_event_id"),
+        {"extend_existing": True},
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    event_id: Mapped[str] = mapped_column(String(100), nullable=False)
     vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id"), nullable=False, index=True)
     vehicle: Mapped["Vehicle"] = relationship("Vehicle", back_populates="telemetry_events")
     battery_percentage: Mapped[float] = mapped_column(nullable=False)

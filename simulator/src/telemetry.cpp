@@ -13,6 +13,26 @@
 namespace waypoint {
 namespace {
 
+std::string generateEventId(std::mt19937& random) {
+    std::array<unsigned char, 16> bytes{};
+    std::uniform_int_distribution<unsigned int> byte_distribution(0, 255);
+    for (auto& byte : bytes) {
+        byte = static_cast<unsigned char>(byte_distribution(random));
+    }
+    bytes[6] = static_cast<unsigned char>((bytes[6] & 0x0f) | 0x40);
+    bytes[8] = static_cast<unsigned char>((bytes[8] & 0x3f) | 0x80);
+
+    std::ostringstream formatted;
+    formatted << std::hex << std::setfill('0');
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        if (index == 4 || index == 6 || index == 8 || index == 10) {
+            formatted << '-';
+        }
+        formatted << std::setw(2) << static_cast<unsigned int>(bytes[index]);
+    }
+    return formatted.str();
+}
+
 std::string formatTimestamp(std::chrono::system_clock::time_point timestamp) {
     const auto time = std::chrono::system_clock::to_time_t(timestamp);
     std::tm utc_time{};
@@ -44,6 +64,7 @@ TelemetryEvent generateTelemetry(
     std::uniform_int_distribution<std::size_t> status_distribution(0, statuses.size() - 1);
 
     return {
+        generateEventId(random),
         std::move(vehicle_id),
         battery_distribution(random),
         statuses[status_distribution(random)],
@@ -55,6 +76,7 @@ TelemetryEvent generateTelemetry(
 
 std::string serializeTelemetry(const TelemetryEvent& event) {
     const nlohmann::json payload{
+        {"event_id", event.event_id},
         {"vehicle_id", event.vehicle_id},
         {"battery_percentage", event.battery_percentage},
         {"status", event.status},

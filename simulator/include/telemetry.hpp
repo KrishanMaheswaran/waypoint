@@ -8,6 +8,7 @@
 namespace waypoint {
 
 struct TelemetryEvent {
+    std::string event_id;
     std::string vehicle_id;
     double battery_percentage;
     std::string status;

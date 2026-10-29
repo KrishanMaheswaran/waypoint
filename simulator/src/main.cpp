@@ -1,4 +1,5 @@
 #include "telemetry.hpp"
+#include "retry.hpp"
 
 #include <charconv>
 #include <chrono>
@@ -78,7 +79,7 @@ Options parseOptions(int argc, char* argv[]) {
     return options;
 }
 
-void waitForNextCycle(std::chrono::steady_clock::time_point deadline) {
+void waitUntil(std::chrono::steady_clock::time_point deadline) {
     while (running && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -104,7 +105,14 @@ int main(int argc, char* argv[]) {
     client.set_read_timeout(5, 0);
     client.set_write_timeout(5, 0);
 
-    std::mt19937 random(std::random_device{}());
+    std::random_device seed_source;
+    std::seed_seq seed{
+        seed_source(),
+        seed_source(),
+        seed_source(),
+        seed_source(),
+    };
+    std::mt19937 random(seed);
     std::cout << "Sending telemetry to " << options.api_url << "/telemetry for "
               << options.vehicle_count << " vehicles every " << options.interval.count()
               << " seconds. Press Ctrl+C to stop.\n";
@@ -115,21 +123,39 @@ int main(int argc, char* argv[]) {
         for (std::size_t index = 1; index <= options.vehicle_count && running; ++index) {
             const auto vehicle_id = "WP-" + std::to_string(1000 + index);
             const auto event = waypoint::generateTelemetry(vehicle_id, random, timestamp);
-            const auto response = client.Post("/telemetry", waypoint::serializeTelemetry(event), "application/json");
+            const auto request_body = waypoint::serializeTelemetry(event);
+            for (unsigned int retry = 0; running; ++retry) {
+                const auto response = client.Post("/telemetry", request_body, "application/json");
+                if (response && response->status >= 200 && response->status < 300) {
+                    std::cout << "POST /telemetry " << vehicle_id << " event "
+                              << event.event_id << ": HTTP " << response->status << '\n';
+                    break;
+                }
 
-            if (!response) {
-                std::cerr << "POST /telemetry failed for " << vehicle_id << ": "
-                          << httplib::to_string(response.error()) << '\n';
-            } else if (response->status < 200 || response->status >= 300) {
-                std::cerr << "POST /telemetry failed for " << vehicle_id << ": HTTP "
-                          << response->status << " " << response->body << '\n';
-            } else {
-                std::cout << "POST /telemetry " << vehicle_id << ": HTTP "
-                          << response->status << '\n';
+                const std::optional<int> http_status = response
+                    ? std::optional<int>(response->status)
+                    : std::nullopt;
+                if (!waypoint::shouldRetry(http_status) || retry >= waypoint::max_retries) {
+                    std::cerr << "POST /telemetry failed for " << vehicle_id << " event "
+                              << event.event_id;
+                    if (response) {
+                        std::cerr << ": HTTP " << response->status << " " << response->body;
+                    } else {
+                        std::cerr << ": " << httplib::to_string(response.error());
+                    }
+                    std::cerr << " (after " << retry << " retries)\n";
+                    break;
+                }
+
+                const auto delay = waypoint::calculateRetryDelay(retry, random);
+                std::cerr << "POST /telemetry transient failure for " << vehicle_id << " event "
+                          << event.event_id << "; retry " << (retry + 1) << "/"
+                          << waypoint::max_retries << " in " << delay.count() << " ms\n";
+                waitUntil(std::chrono::steady_clock::now() + delay);
             }
         }
         if (running) {
-            waitForNextCycle(next_cycle);
+            waitUntil(next_cycle);
         }
     }
 

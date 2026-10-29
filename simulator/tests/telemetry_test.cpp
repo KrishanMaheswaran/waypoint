@@ -25,7 +25,16 @@ int main() {
     std::mt19937 random(42);
     const auto timestamp = std::chrono::system_clock::from_time_t(1793318400);
     const auto event = waypoint::generateTelemetry("WP-1001", random, timestamp);
+    const auto second_event = waypoint::generateTelemetry("WP-1002", random, timestamp);
 
+    require(event.event_id.size() == 36, "event ID is a UUID");
+    require(
+        event.event_id[8] == '-' && event.event_id[13] == '-' &&
+            event.event_id[18] == '-' && event.event_id[23] == '-',
+        "event ID uses UUID separators"
+    );
+    require(event.event_id[14] == '4', "event ID uses UUID version 4");
+    require(event.event_id != second_event.event_id, "generated events use different IDs");
     require(event.vehicle_id == "WP-1001", "vehicle ID is serialized into the generated event");
     require(event.battery_percentage >= 20.0 && event.battery_percentage <= 100.0, "battery stays in range");
     require(event.temperature >= 18.0 && event.temperature <= 38.0, "temperature stays in range");
@@ -37,7 +46,8 @@ int main() {
     require(!event.fault_code.has_value(), "fault code is optional");
 
     const auto payload = nlohmann::json::parse(waypoint::serializeTelemetry(event));
-    require(payload.size() == 6, "JSON contains only the six telemetry schema fields");
+    require(payload.size() == 7, "JSON contains all telemetry schema fields");
+    require(payload.at("event_id") == event.event_id, "JSON preserves event ID");
     require(payload.at("vehicle_id") == "WP-1001", "JSON preserves vehicle ID");
     require(payload.at("battery_percentage") == event.battery_percentage, "JSON preserves battery percentage");
     require(payload.at("status") == event.status, "JSON preserves status");

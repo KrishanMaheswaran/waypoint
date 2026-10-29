@@ -36,4 +36,11 @@ if(BUILD_TESTING)
     )
     target_link_libraries(telemetry-tests PRIVATE telemetry)
     add_test(NAME telemetry-tests COMMAND telemetry-tests)
+
+    add_executable(retry-tests
+        tests/retry_test.cpp
+    )
+    target_include_directories(retry-tests PRIVATE include)
+    target_compile_features(retry-tests PRIVATE cxx_std_17)
+    add_test(NAME retry-tests COMMAND retry-tests)
 endif()
