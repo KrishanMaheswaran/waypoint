@@ -18,6 +18,7 @@ Waypoint is a portfolio-quality real-time fleet telemetry platform for backend a
 - `simulator/` – C++17 telemetry generator, HTTP client, and CTest unit tests.
 - `benchmarks/` – standalone asynchronous telemetry ingestion benchmark and Python tests.
 - `docker-compose.yml` – local orchestration for the backend and PostgreSQL database.
+- `monitoring/` – Prometheus scrape configuration and provisioned Grafana dashboard.
 - `.env.example` – template for environment variables.
 - `.gitignore` – excludes local environment and dependency files.
 - `README.md` – setup, migration, testing, and API usage instructions.
@@ -145,6 +146,26 @@ Vehicle IDs are generated as `WP-1001`, `WP-1002`, and so on. Each event gets a 
 - Telemetry history retains valid events regardless of arrival order. The vehicle's current state changes only when an event timestamp is strictly newer than its current `last_updated` value; older events do not replace the latest state.
 - The simulator retries connection failures and HTTP 429/5xx responses up to three times after the initial attempt. Delays use full jitter from 0 to an exponentially increasing upper bound (500 ms, 1 s, 2 s; capped at 8 s). HTTP 4xx responses other than 429, including validation errors, are not retried. Connect, read, and write timeouts are each five seconds.
 - Retries with stable event IDs reduce duplicate event creation, but do not guarantee exactly-once delivery. A request can be accepted while its response is lost; callers should use the event ID to safely retry.
+
+## Backend observability
+
+The backend exposes Prometheus text-format metrics at `GET /metrics`. HTTP request totals are labeled only with a normalized method, FastAPI route template, and status code; duration histograms use method and route template. Telemetry ingestion totals use only `success` or `failure` as the outcome label. Dynamic vehicle/event identifiers and raw request paths are never used as labels, and `/metrics` scrapes are excluded from request instrumentation.
+
+Start the API, PostgreSQL, Prometheus, and Grafana together:
+
+```bash
+docker compose up --build -d
+```
+
+Grafana and Prometheus ports are published on `127.0.0.1` only. Ensure the ignored `.env` file contains unique local values for `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` (merge the example entries into an existing `.env`); Compose refuses to start Grafana when either is missing. The example password is a placeholder, not a credential. Grafana reads these variables when initializing its admin account; changing them later does not rotate the password in an already-initialized Grafana data volume, so use Grafana's admin controls to rotate an existing account. The provisioned **Waypoint API** dashboard shows HTTP request rate, p50/p95 request latency, HTTP 4xx/5xx rate, and telemetry ingestion rate separated by outcome. Prometheus is available at http://localhost:9090 and scrapes the backend every five seconds.
+
+Check metrics directly:
+
+```bash
+curl http://localhost:8000/metrics
+```
+
+Counters are cumulative since the backend process started. Dashboard rates use a five-minute Prometheus rate window, so they need time and traffic to become informative. Histogram quantiles are estimates from configured buckets. This local stack provides basic instrumentation and dashboards, not alerting, authentication hardening, or a highly available monitoring deployment.
 
 ## Telemetry ingestion benchmarks
 
