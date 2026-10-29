@@ -15,6 +15,7 @@ Waypoint is a portfolio-quality real-time fleet telemetry platform for backend a
 - `backend/tests/test_telemetry_api.py` – endpoint and database validation tests for Milestone 2.
 - `backend/requirements.txt` – Python dependencies for the backend.
 - `backend/Dockerfile` – container configuration for the API service.
+- `simulator/` – C++17 telemetry generator, HTTP client, and CTest unit tests.
 - `docker-compose.yml` – local orchestration for the backend and PostgreSQL database.
 - `.env.example` – template for environment variables.
 - `.gitignore` – excludes local environment and dependency files.
@@ -98,6 +99,44 @@ source ../.venv/bin/activate
 pytest -q
 ```
 
+## C++ telemetry simulator
+
+The simulator sends one event for each vehicle to `POST /telemetry` every two seconds. It uses CMake `FetchContent` to download nlohmann/json 3.11.3 and cpp-httplib 0.18.1 at configure time; no separate C++ library installation is needed. The first configure requires network access to fetch these dependencies.
+
+Install the build tools:
+
+```bash
+# macOS
+xcode-select --install
+brew install cmake
+
+# Debian/Ubuntu Linux
+sudo apt-get update
+sudo apt-get install build-essential cmake
+```
+
+Configure, build, and run the simulator's unit tests:
+
+```bash
+cmake -S simulator -B simulator/build
+cmake --build simulator/build --parallel
+ctest --test-dir simulator/build --output-on-failure
+```
+
+Start the backend with `docker compose up --build` in a separate terminal, then launch the simulator:
+
+```bash
+./simulator/build/waypoint-simulator
+```
+
+The API URL, vehicle count, and interval (in seconds) can be overridden:
+
+```bash
+./simulator/build/waypoint-simulator --url http://localhost:8000 --vehicles 5 --interval 2
+```
+
+Vehicle IDs are generated as `WP-1001`, `WP-1002`, and so on. Press Ctrl+C to stop. Connection failures and non-2xx API responses are logged, and the simulator continues sending subsequent events.
+
 ## API testing examples
 
 Send a telemetry event:
@@ -130,5 +169,5 @@ curl "http://localhost:8000/vehicles/VF-1001/telemetry?limit=20"
 ## Notes
 
 - PostgreSQL is configured through Docker Compose and environment variables from `.env`.
-- The project is intentionally kept minimal for Milestone 2 and does not include Kafka, Redis, frontend work, or production deployment.
+- The project is intentionally kept minimal for Milestone 3A and does not include Kafka, Redis, frontend work, or production deployment.
 - If Docker or PostgreSQL is unavailable in the local environment, the Python tests still validate the API logic with SQLite-backed session overrides, but the actual Postgres integration itself remains unverified until Docker is available.
