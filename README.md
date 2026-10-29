@@ -16,6 +16,7 @@ Waypoint is a portfolio-quality real-time fleet telemetry platform for backend a
 - `backend/requirements.txt` – Python dependencies for the backend.
 - `backend/Dockerfile` – container configuration for the API service.
 - `simulator/` – C++17 telemetry generator, HTTP client, and CTest unit tests.
+- `benchmarks/` – standalone asynchronous telemetry ingestion benchmark and Python tests.
 - `docker-compose.yml` – local orchestration for the backend and PostgreSQL database.
 - `.env.example` – template for environment variables.
 - `.gitignore` – excludes local environment and dependency files.
@@ -144,6 +145,44 @@ Vehicle IDs are generated as `WP-1001`, `WP-1002`, and so on. Each event gets a 
 - Telemetry history retains valid events regardless of arrival order. The vehicle's current state changes only when an event timestamp is strictly newer than its current `last_updated` value; older events do not replace the latest state.
 - The simulator retries connection failures and HTTP 429/5xx responses up to three times after the initial attempt. Delays use full jitter from 0 to an exponentially increasing upper bound (500 ms, 1 s, 2 s; capped at 8 s). HTTP 4xx responses other than 429, including validation errors, are not retried. Connect, read, and write timeouts are each five seconds.
 - Retries with stable event IDs reduce duplicate event creation, but do not guarantee exactly-once delivery. A request can be accepted while its response is lost; callers should use the event ID to safely retry.
+
+## Telemetry ingestion benchmarks
+
+The standalone benchmark uses Python 3.12 and `httpx` to asynchronously submit valid telemetry directly to `POST /telemetry`. It does not change the API, retry failed requests, reset the database, or delete data. Warm-up and measured events are stored in PostgreSQL and use unique event IDs and run-scoped `BENCH-...` vehicle IDs.
+
+### Safety and methodology
+
+- The default target is `http://127.0.0.1:8000`. Only plain HTTP URLs whose host is `localhost` or a loopback IP are accepted; public, non-loopback, credential-bearing, and HTTPS targets are rejected.
+- Concurrency is bounded by an async semaphore and HTTP connection-pool limits. The default is 8 requests at a time; the tool caps concurrency at 32 and measured events at 1,000 to limit local load.
+- Five warm-up events run before the timed phase by default. They use the same run-scoped vehicle IDs as the measured phase, so requests exercise the warmed vehicle-update path; warm-up results are reported separately and excluded from measured duration and throughput.
+- Request latency percentiles include all measured HTTP requests, including HTTP failures and transport errors. Successful events per second is successful 2xx responses divided by measured wall-clock duration. HTTP status failures and transport failures are reported separately from successful responses.
+- Payload values are seeded for repeatable generation ranges (`--seed`, default `42`); event IDs and run IDs remain randomly unique. Use the same event, vehicle, concurrency, warm-up, and seed settings to compare runs on the same environment.
+- This is a local end-to-end measurement, not a capacity guarantee. Results include client, Docker, API, and PostgreSQL effects. Repeated runs append events to the database and can affect later results; record the initial database state and run each scenario under comparable conditions.
+- For this project, the local verification environment was Python 3.12.12 on macOS ARM64, Docker Engine 29.9.2, and PostgreSQL 16.15. The Compose file does not set container CPU or memory limits, so Docker Desktop's resource allocation applies. When recording or comparing results, also record host CPU/memory, Docker resource allocation, PostgreSQL version, database size, concurrency, and whether the database was warmed by prior runs. A single local run does not establish production capacity or scalability.
+
+### Install and run
+
+Use the project Python 3.12 environment. Install the benchmark's HTTP client if it is not already available:
+
+```bash
+python3.12 -m pip install httpx==0.27.2
+```
+
+Start the local backend with Docker Compose, then run each reproducible scenario from the repository root:
+
+```bash
+python3.12 benchmarks/run_benchmark.py --base-url http://127.0.0.1:8000 --events 100 --vehicles 20 --concurrency 4 --warmup-events 5 --seed 42
+python3.12 benchmarks/run_benchmark.py --base-url http://127.0.0.1:8000 --events 500 --vehicles 50 --concurrency 8 --warmup-events 5 --seed 42
+python3.12 benchmarks/run_benchmark.py --base-url http://127.0.0.1:8000 --events 1000 --vehicles 100 --concurrency 8 --warmup-events 5 --seed 42
+```
+
+Each command prints a JSON report containing configuration, warm-up results, measured duration, successful throughput, latency percentiles, successful HTTP status counts, HTTP error counts, and transport error counts. Adjust `--events`, `--vehicles`, `--concurrency`, `--warmup-events`, `--seed`, or `--base-url` within the documented safety limits.
+
+Run the benchmark unit tests with:
+
+```bash
+python3.12 -m unittest discover -s benchmarks -p 'test_*.py' -v
+```
 
 ## API testing examples
 
