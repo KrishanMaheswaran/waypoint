@@ -1,6 +1,8 @@
 services:
   db:
     image: postgres:16-alpine
+    networks:
+      - database
     environment:
       POSTGRES_DB: waypoint_smoke
       POSTGRES_USER: waypoint_smoke
@@ -15,6 +17,8 @@ services:
 
   redpanda:
     image: redpandadata/redpanda:v24.3.8
+    networks:
+      - broker
     command:
       - redpanda
       - start
@@ -52,6 +56,8 @@ services:
       KAFKA_TOPIC: waypoint.telemetry
       KAFKA_PARTITIONS: "3"
     command: ["python", "-m", "app.kafka_admin"]
+    networks:
+      - broker
     depends_on:
       redpanda:
         condition: service_healthy
@@ -66,8 +72,11 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
       KAFKA_TOPIC: waypoint.telemetry
       KAFKA_PARTITIONS: "3"
+    networks:
+      - database
+      - broker
     ports:
-      - "127.0.0.1:18000:8000"
+      - "127.0.0.1:${WAYPOINT_SMOKE_API_PORT:-18000}:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -95,6 +104,11 @@ services:
       KAFKA_PARTITIONS: "3"
       KAFKA_METRICS_PORT: "8001"
     command: ["python", "-m", "app.consumer"]
+    networks:
+      - database
+      - broker
+    ports:
+      - "127.0.0.1:${WAYPOINT_SMOKE_CONSUMER_METRICS_PORT:-18001}:8001"
     depends_on:
       db:
         condition: service_healthy
@@ -111,3 +125,8 @@ services:
       retries: 20
       start_period: 10s
     stop_grace_period: 20s
+    restart: "no"
+
+networks:
+  database:
+  broker:

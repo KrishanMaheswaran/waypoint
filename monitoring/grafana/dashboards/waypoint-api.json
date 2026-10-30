@@ -255,6 +255,96 @@
       ],
       "title": "Kafka consumer lag",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(waypoint_kafka_consumer_retries_total[5m]))",
+          "legendFormat": "retries: {{reason}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (reason) (rate(waypoint_kafka_consumer_failures_total[5m]))",
+          "legendFormat": "failures: {{reason}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Consumer retries and failures",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(waypoint_kafka_consumer_recovered_events_total[5m]))",
+          "legendFormat": "recovered records / second",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(waypoint_kafka_consumer_recovery_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 recovery duration",
+          "refId": "B"
+        }
+      ],
+      "title": "Consumer recovery",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",

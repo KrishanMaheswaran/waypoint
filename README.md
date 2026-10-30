@@ -287,6 +287,8 @@ docker compose -f backend/tests/docker-compose.kafka-smoke.yml -p waypoint-m7a-s
 
 The POST response should be `202` with `X-Waypoint-Delivery: broker-acknowledged`; poll `GET /vehicles` until the consumer has persisted the event. Use a fresh event ID for each run. `stop` preserves the isolated containers while running; no command here alters the normal Waypoint volumes.
 
+Run the isolated reliability experiments with `python3.12 backend/tests/reliability.py --scenario quick` (the CI subset) or `python3.12 backend/tests/reliability.py --scenario all` for consumer interruption, database access failure, in-flight restart, and broker outage coverage. The harness uses its own uniquely named Compose project and disposable `tmpfs` storage; details and one-run observed measurements are in [docs/reliability.md](docs/reliability.md).
+
 Simulator tests are the CMake/CTest commands shown above. Frontend tests and a production build (run from `frontend/`) are:
 
 ```bash

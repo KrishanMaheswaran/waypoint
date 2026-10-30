@@ -12,7 +12,15 @@ from sqlalchemy.pool import StaticPool
 from aiokafka.structs import OffsetAndMetadata, TopicPartition
 
 from app import consumer as consumer_module
-from app.consumer import consume_message, consume_message_with_retry
+from app.consumer import (
+    CONSUMER_LAG,
+    CONSUMER_RECOVERED_EVENTS,
+    CONSUMER_RECOVERY_DURATION,
+    CONSUMER_RETRIES,
+    consume_message,
+    consume_message_with_retry,
+    update_consumer_lag,
+)
 from app.database import Base
 from app.models import TelemetryEvent, TelemetryIngestionFailure, Vehicle
 
@@ -51,6 +59,21 @@ class FakeConsumer:
             self.fail_commits -= 1
             raise TimeoutError("commit acknowledgment lost")
         self.commits.append(offsets)
+
+
+class FakeLagConsumer:
+    def __init__(self, topic_partition: TopicPartition, highwater: int) -> None:
+        self.topic_partition = topic_partition
+        self._highwater = highwater
+
+    def assignment(self) -> set[TopicPartition]:
+        return {self.topic_partition}
+
+    async def committed(self, topic_partition: TopicPartition) -> int | None:
+        return None
+
+    def highwater(self, topic_partition: TopicPartition) -> int | None:
+        return self._highwater
 
 
 def event(
@@ -198,6 +221,9 @@ def test_database_and_commit_retries_are_bounded_and_replay_safe(
     assert consumer.commit_attempts == 2
     assert len(consumer.commits) == 1
     assert sleep_calls == 1
+    assert CONSUMER_RETRIES.labels("broker_or_commit")._value.get() >= 1
+    assert CONSUMER_RECOVERED_EVENTS._value.get() >= 1
+    assert CONSUMER_RECOVERY_DURATION._sum.get() >= 0
     with TestSessionLocal() as db:
         assert db.scalar(select(func.count()).select_from(TelemetryEvent)) == 1
 
@@ -218,3 +244,12 @@ def test_database_and_commit_retries_are_bounded_and_replay_safe(
             )
         )
     assert attempts == 3
+
+
+def test_uncommitted_messages_are_counted_as_consumer_lag() -> None:
+    topic_partition = TopicPartition("waypoint.telemetry", 2)
+    consumer = FakeLagConsumer(topic_partition, highwater=5)
+
+    asyncio.run(update_consumer_lag(consumer))
+
+    assert CONSUMER_LAG.labels("waypoint.telemetry", "2")._value.get() == 5
