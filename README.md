@@ -14,12 +14,13 @@ Waypoint is a fleet telemetry platform with a FastAPI/PostgreSQL backend, a C++1
 - `backend/tests/test_health.py` – pytest smoke test for `/health`.
 - `backend/tests/test_telemetry_api.py` – endpoint and database validation tests for Milestone 2.
 - `backend/requirements.txt` – Python dependencies for the backend.
-- `backend/Dockerfile` – container configuration for the API service.
+- `backend/Dockerfile` and `backend/.dockerignore` – non-root backend image and build-context exclusions.
 - `simulator/` – C++17 telemetry generator, HTTP client, and CTest unit tests.
 - `benchmarks/` – standalone asynchronous telemetry ingestion benchmark and Python tests.
 - `docker-compose.yml` – local orchestration for the backend and PostgreSQL database.
 - `monitoring/` – Prometheus scrape configuration and provisioned Grafana dashboard.
 - `frontend/` – React + TypeScript fleet operations dashboard.
+- `frontend/Dockerfile`, `frontend/nginx.conf`, and `frontend/.dockerignore` – production frontend image, Nginx API/SPA routing, and build-context exclusions.
 - `.env.example` – template for environment variables.
 - `.gitignore` – excludes local environment and dependency files.
 - `README.md` – setup, migration, testing, and API usage instructions.
@@ -53,28 +54,50 @@ Waypoint is a fleet telemetry platform with a FastAPI/PostgreSQL backend, a C++1
    pip install --upgrade pip
    pip install -r requirements.txt
    ```
-6. Copy the example environment file and adjust values if needed:
+6. Create the local environment file if one does not already exist. Replace both password placeholders with unique local passwords; `.env` is ignored by Git:
 
    ```bash
    cd ..
-   cp .env.example .env
+   cp -n .env.example .env
    ```
-7. Start PostgreSQL and the API through Docker Compose:
+
+   If `.env` already exists, preserve it and merge any missing keys from `.env.example`. The database and Grafana passwords must match the credentials you intend to use; changing these values does not rotate credentials in already-initialized database or Grafana volumes.
+7. Start PostgreSQL and apply migrations, then build and start the application stack:
 
    ```bash
-   docker compose up --build
+   docker compose up -d db
+   docker compose run --rm backend alembic upgrade head
+   docker compose up --build -d
    ```
-8. Confirm the API is responding:
+
+   Open the frontend at http://127.0.0.1:8080. The backend is available at http://127.0.0.1:8000, Prometheus at http://127.0.0.1:9090, and Grafana at http://127.0.0.1:3000.
+8. Confirm the API and frontend are responding:
 
    ```bash
-   curl http://localhost:8000/health
+   curl --fail http://127.0.0.1:8080/
+   curl --fail http://127.0.0.1:8080/api/health
+   curl --fail http://127.0.0.1:8000/health
    ```
 
-   Expected response:
+   The health endpoints return:
 
    ```json
    {"status": "ok"}
    ```
+
+Docker-published frontend, backend, and PostgreSQL ports bind to `127.0.0.1` by default. Override `FRONTEND_PORT`, `BACKEND_PORT`, or `POSTGRES_PORT` in `.env` if those local host ports are already in use. Services still communicate over Docker Compose's private network; Nginx forwards `/api/...` to the backend with the `/api` prefix removed, matching Vite's local development proxy.
+
+The backend and database have Docker health checks. The frontend waits for a healthy backend and has an HTTP health check. Services use `unless-stopped` restart policies. The existing named `postgres_data`, `prometheus_data`, and `grafana_data` volumes are unchanged and are not removed during normal image builds or `docker compose up`.
+
+### Docker deployment troubleshooting
+
+- Check service state and health with `docker compose ps`. A service may need time to become healthy after its first image build.
+- Inspect startup failures with `docker compose logs --tail=100 db backend frontend`; include `prometheus grafana` to inspect monitoring services.
+- If PostgreSQL or Grafana reports password/authentication problems after a volume already exists, its persisted credentials may differ from `.env`. Update the account through PostgreSQL/Grafana's supported credential-management process; changing `.env` alone does not rotate persisted credentials.
+- If the backend does not become healthy, verify PostgreSQL is healthy and `.env` points the backend to the Compose hostname `db` on container port `5432`. From the host, use `127.0.0.1` and the published `POSTGRES_PORT` instead.
+- If `/api/health` fails in the browser, check backend health and frontend logs, and confirm Nginx can resolve the Compose service name `backend`.
+- If `docker compose config` reports missing values, ensure `.env` has `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_USER`, and `GRAFANA_ADMIN_PASSWORD`; do not commit `.env`.
+- To stop services without deleting persistent data, run `docker compose stop`. Do not use volume-removal options when preserving telemetry or monitoring data.
 
 ## Local development commands
 

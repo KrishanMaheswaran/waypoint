@@ -9,7 +9,10 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+RUN useradd --system --uid 10001 --create-home app
+COPY --chown=app:app . .
+
+USER app
 
 EXPOSE 8000
 
