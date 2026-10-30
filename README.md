@@ -1,77 +1,82 @@
 # Waypoint
 
-Waypoint is a fleet telemetry platform with a FastAPI/PostgreSQL backend, a C++17 telemetry simulator, reproducible ingestion benchmarks, Prometheus/Grafana observability, and a React + TypeScript operations dashboard. Telemetry ingestion supports idempotent event retries, ordered vehicle state, and bounded simulator retries.
+Waypoint is a local fleet telemetry system built around a FastAPI API and PostgreSQL event store. A C++17 simulator generates vehicle readings, a React dashboard displays current state and history, and Prometheus/Grafana provide basic service observability. The repository also includes a loopback-only asynchronous ingestion benchmark and GitHub Actions CI.
 
-## Project structure
+The project is intended for local development and demonstration. It is not a highly available or production deployment.
 
-- `backend/app/main.py` – FastAPI application entrypoint and router registration.
-- `backend/app/config.py` – environment-based application settings for PostgreSQL.
-- `backend/app/database.py` – SQLAlchemy engine, session factory, and database session dependency.
-- `backend/app/models.py` – SQLAlchemy vehicle and telemetry models.
-- `backend/app/schemas.py` – Pydantic validation models for telemetry inputs and outputs.
-- `backend/app/routes.py` – FastAPI endpoints for telemetry ingestion and vehicle queries.
-- `backend/alembic/` – Alembic migration configuration and version files, including the telemetry idempotency migration.
-- `backend/tests/test_health.py` – pytest smoke test for `/health`.
-- `backend/tests/test_telemetry_api.py` – endpoint and database validation tests for Milestone 2.
-- `backend/requirements.txt` – Python dependencies for the backend.
-- `backend/Dockerfile` and `backend/.dockerignore` – non-root backend image and build-context exclusions.
-- `simulator/` – C++17 telemetry generator, HTTP client, and CTest unit tests.
-- `benchmarks/` – standalone asynchronous telemetry ingestion benchmark and Python tests.
-- `docker-compose.yml` – local orchestration for the backend and PostgreSQL database.
-- `monitoring/` – Prometheus scrape configuration and provisioned Grafana dashboard.
-- `frontend/` – React + TypeScript fleet operations dashboard.
-- `frontend/Dockerfile`, `frontend/nginx.conf`, and `frontend/.dockerignore` – production frontend image, Nginx API/SPA routing, and build-context exclusions.
-- `.env.example` – template for environment variables.
-- `.gitignore` – excludes local environment and dependency files.
-- `README.md` – setup, migration, testing, and API usage instructions.
+## Engineering features
 
-## Architectural decisions
+- Validated telemetry ingestion with durable PostgreSQL event history and Alembic-managed schema changes.
+- Database-enforced event ID uniqueness, safe handling of identical retries, conflict detection, and timestamp-aware latest vehicle state.
+- C++17 simulator with configurable target, vehicle count, and interval; bounded retries for transient errors.
+- Responsive React + TypeScript fleet dashboard using the existing API, with status/source filters, search, pagination, and historical trends.
+- Low-cardinality Prometheus HTTP and ingestion metrics, a configured scrape target, and a provisioned Grafana dashboard.
+- Async benchmark tool with bounded concurrency, warm-up, latency statistics, and loopback-only target validation.
+- Independent backend, simulator, and frontend GitHub Actions jobs.
 
-- `SQLAlchemy 2.x` is used for ORM models and database sessions.
-- `Pydantic` schemas validate incoming telemetry payloads and shape API responses.
-- API routes stay in a dedicated file to keep the app modular and maintainable.
-- Vehicle records are created automatically when a telemetry event arrives for a new vehicle ID.
-- Each telemetry event remains immutable in the event table while the `vehicles` table stores the latest known state.
-- Alembic handles schema migrations so the database can evolve without manual SQL.
-- The app config is environment-driven; credentials are kept in `.env` rather than committed to source.
+## Architecture
 
-## macOS setup
+The solid arrows below are runtime traffic. The dashed arrows belong to CI and its disposable test database; CI does not deploy the application.
 
-1. Install Python 3.12 from python.org or using `brew install python@3.12`.
-2. Install Docker Desktop for Mac from https://www.docker.com/products/docker-desktop/.
-3. Open a terminal in the project root.
-4. Create and activate a virtual environment:
+```mermaid
+flowchart LR
+  subgraph Runtime["Runtime — Docker Compose"]
+    Simulator["C++17 telemetry simulator"] -->|"POST /telemetry"| API["FastAPI"]
+    Browser["Operator browser"] -->|"HTTP"| Nginx["Nginx frontend"]
+    Nginx -->|"/api/* (prefix removed)"| API
+    API -->|"SQLAlchemy reads/writes"| PostgreSQL[("PostgreSQL 16")]
+    Alembic["Alembic migrations"] -.->|"schema changes"| PostgreSQL
+    Prometheus["Prometheus"] -->|"scrape GET /metrics"| API
+    Grafana["Grafana dashboard"] -->|"PromQL"| Prometheus
+  end
+
+  subgraph CI["GitHub Actions — CI only"]
+    Actions["GitHub Actions"] --> BackendTests["Backend pytest"]
+    Actions --> SimulatorTests["CMake build + CTest"]
+    Actions --> FrontendTests["Frontend test + build + npm audit"]
+    BackendTests -.->|"disposable service"| TestPostgreSQL[("PostgreSQL 16 test database")]
+  end
+```
+
+### Technology
+
+| Area | Components |
+|---|---|
+| API and validation | Python 3.12, FastAPI, Pydantic |
+| Persistence | PostgreSQL 16, SQLAlchemy 2, Alembic |
+| Simulator | C++17, CMake, cpp-httplib, nlohmann/json |
+| Web UI | React 18, TypeScript, Vite |
+| Serving and monitoring | Nginx, Prometheus, Grafana |
+| CI | GitHub Actions |
+
+## Quick start with Docker Compose
+
+Prerequisites: Docker Desktop or Docker Engine with the Compose plugin, and Git.
+
+1. Create a local environment file and replace the database and Grafana password placeholders with unique local passwords. Keep `.env` private; it is ignored by Git.
 
    ```bash
-   cd /Users/krishan/Desktop/WayPoint
-   python3.12 -m venv .venv
-   source .venv/bin/activate
-   ```
-5. Install backend dependencies:
-
-   ```bash
-   cd backend
-   pip install --upgrade pip
-   pip install -r requirements.txt
-   ```
-6. Create the local environment file if one does not already exist. Replace both password placeholders with unique local passwords; `.env` is ignored by Git:
-
-   ```bash
-   cd ..
    cp -n .env.example .env
    ```
 
-   If `.env` already exists, preserve it and merge any missing keys from `.env.example`. The database and Grafana passwords must match the credentials you intend to use; changing these values does not rotate credentials in already-initialized database or Grafana volumes.
-7. Start PostgreSQL and apply migrations, then build and start the application stack:
+   If `.env` already exists, preserve it and merge any missing keys from `.env.example`. Updating `.env` does not rotate credentials already stored in initialized PostgreSQL or Grafana volumes.
+
+2. Build the backend image, start PostgreSQL, and apply migrations:
 
    ```bash
+   docker compose build backend
    docker compose up -d db
    docker compose run --rm backend alembic upgrade head
-   docker compose up --build -d
    ```
 
-   Open the frontend at http://127.0.0.1:8080. The backend is available at http://127.0.0.1:8000, Prometheus at http://127.0.0.1:9090, and Grafana at http://127.0.0.1:3000.
-8. Confirm the API and frontend are responding:
+3. Build and start the application and monitoring services:
+
+   ```bash
+   docker compose up --build -d
+   docker compose ps
+   ```
+
+4. Check the frontend and API:
 
    ```bash
    curl --fail http://127.0.0.1:8080/
@@ -79,94 +84,86 @@ Waypoint is a fleet telemetry platform with a FastAPI/PostgreSQL backend, a C++1
    curl --fail http://127.0.0.1:8000/health
    ```
 
-   The health endpoints return:
+| Service | Local address |
+|---|---|
+| React dashboard via Nginx | http://127.0.0.1:8080 |
+| FastAPI | http://127.0.0.1:8000 |
+| Prometheus | http://127.0.0.1:9090 |
+| Grafana | http://127.0.0.1:3000 |
 
-   ```json
-   {"status": "ok"}
-   ```
+The dashboard reaches the API through Nginx at `/api/...`; Nginx removes the `/api` prefix before proxying. Direct API access is also published for local development. Published ports bind to loopback by default. Compose keeps `postgres_data`, `prometheus_data`, and `grafana_data` as named persistent volumes. Use `docker compose stop` to stop services without removing their data.
 
-Docker-published frontend, backend, and PostgreSQL ports bind to `127.0.0.1` by default. Override `FRONTEND_PORT`, `BACKEND_PORT`, or `POSTGRES_PORT` in `.env` if those local host ports are already in use. Services still communicate over Docker Compose's private network; Nginx forwards `/api/...` to the backend with the `/api` prefix removed, matching Vite's local development proxy.
+To apply later schema migrations, run `docker compose run --rm backend alembic upgrade head`. Migrations are not run automatically when the backend container starts.
 
-The backend and database have Docker health checks. The frontend waits for a healthy backend and has an HTTP health check. Services use `unless-stopped` restart policies. The existing named `postgres_data`, `prometheus_data`, and `grafana_data` volumes are unchanged and are not removed during normal image builds or `docker compose up`.
+### Troubleshooting
 
-### Docker deployment troubleshooting
+- Use `docker compose ps` and `docker compose logs --tail=100 db backend frontend prometheus grafana` to inspect service state and startup errors.
+- The backend depends on a healthy database. Confirm its Compose connection uses host `db` and container port `5432`; `127.0.0.1` is for host-side connections.
+- Compose requires `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_USER`, and `GRAFANA_ADMIN_PASSWORD` in `.env`. Never commit the local `.env`.
+- If an initialized PostgreSQL or Grafana volume contains different credentials, changing `.env` alone does not change the persisted account password.
+- If `/api/health` fails, check backend health and frontend logs, and confirm Nginx can resolve the `backend` Compose service.
 
-- Check service state and health with `docker compose ps`. A service may need time to become healthy after its first image build.
-- Inspect startup failures with `docker compose logs --tail=100 db backend frontend`; include `prometheus grafana` to inspect monitoring services.
-- If PostgreSQL or Grafana reports password/authentication problems after a volume already exists, its persisted credentials may differ from `.env`. Update the account through PostgreSQL/Grafana's supported credential-management process; changing `.env` alone does not rotate persisted credentials.
-- If the backend does not become healthy, verify PostgreSQL is healthy and `.env` points the backend to the Compose hostname `db` on container port `5432`. From the host, use `127.0.0.1` and the published `POSTGRES_PORT` instead.
-- If `/api/health` fails in the browser, check backend health and frontend logs, and confirm Nginx can resolve the Compose service name `backend`.
-- If `docker compose config` reports missing values, ensure `.env` has `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_USER`, and `GRAFANA_ADMIN_PASSWORD`; do not commit `.env`.
-- To stop services without deleting persistent data, run `docker compose stop`. Do not use volume-removal options when preserving telemetry or monitoring data.
+## API reference
 
-## Local development commands
+The public API is implemented in [`backend/app/routes.py`](backend/app/routes.py), with request/response validation in [`backend/app/schemas.py`](backend/app/schemas.py).
 
-Run the API directly with uvicorn:
+| Method and path | Behavior |
+|---|---|
+| `GET /health` | Returns `{"status":"ok"}` when the API process responds. |
+| `GET /metrics` | Exposes Prometheus text-format metrics; excluded from HTTP request instrumentation. |
+| `POST /telemetry` | Validates and stores one telemetry event. New event: `201`; identical event retry: `200`; event ID reused for different content: `409`; invalid payload: `422`. |
+| `GET /vehicles` | Returns each vehicle's latest known state. |
+| `GET /vehicles/{vehicle_id}/telemetry?limit=50` | Returns recent event history, newest timestamp first. `limit` must be between 1 and 1000; default is 50. |
 
-```bash
-cd backend
-source ../.venv/bin/activate
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+`POST /telemetry` accepts this JSON shape:
+
+```json
+{
+  "event_id": "0df306c9-cc18-49cb-9f75-51489f8f3d71",
+  "vehicle_id": "WP-1001",
+  "battery_percentage": 88.5,
+  "status": "ready",
+  "temperature": 24.7,
+  "fault_code": null,
+  "timestamp": "2026-10-26T12:00:00Z"
+}
 ```
 
-Create the database schema with Alembic:
+| Field | Type and validation |
+|---|---|
+| `event_id` | String, 1–100 characters; unique across stored telemetry events. |
+| `vehicle_id` | String, 1–100 characters. |
+| `battery_percentage` | Number from 0 through 100. |
+| `status` | One of `idle`, `charging`, `ready`, or `maintenance`. |
+| `temperature` | Number from -100 through 200. |
+| `fault_code` | String up to 100 characters, or `null`. |
+| `timestamp` | Datetime accepted by Pydantic; clients emit UTC ISO 8601 timestamps. |
 
-```bash
-cd backend
-source ../.venv/bin/activate
-alembic upgrade head
-```
+### Idempotency and event ordering
 
-Run tests:
-
-```bash
-cd backend
-source ../.venv/bin/activate
-pytest -q
-```
-
-## Continuous integration
-
-GitHub Actions runs independent backend, C++ simulator, and frontend jobs for pushes to `main` and pull requests targeting `main`. The backend job starts a disposable PostgreSQL 16 service with test-only credentials, applies Alembic migrations, and runs pytest with `WAYPOINT_TEST_DATABASE_URL` directed at that service. Outside CI, the telemetry API tests keep using isolated in-memory SQLite unless that explicit test-only variable is set. The PostgreSQL test fixture drops and recreates its ORM tables, so only set `WAYPOINT_TEST_DATABASE_URL` to a disposable test database, never to a local, shared, or production database. The simulator job installs CMake and a C++ compiler, then configures, builds, and runs CTest; CMake fetches the simulator's JSON and HTTP dependencies. The frontend job uses Node.js 22, `npm ci`, the test/build scripts, and a high-severity npm audit check.
-
-## Fleet operations frontend
-
-The frontend is a React + TypeScript dashboard that reads live vehicle state and telemetry history from the existing `GET /vehicles` and `GET /vehicles/{vehicle_id}/telemetry` API endpoints. It refreshes every five seconds, displays vehicle status, battery, temperature, current fault codes, and timestamped history trends, and does not include simulated or fallback data. The source filter classifies an ID as a benchmark vehicle when it begins with `BENCH-` (case-insensitive); this is a client-side naming convention, not an API field. It defaults to non-benchmark vehicles when any are present, otherwise selects **All vehicles** and explains the fallback. Fleet summary metrics use the selected source. Search and status filters further narrow the table, which is paginated locally at 25 rows per page; changing filters returns to page 1. Selecting a vehicle shows its latest state and the real timestamped history returned by the API.
-
-Start the backend using the Docker Compose instructions above. In a separate terminal, install frontend dependencies and launch Vite:
-
-```bash
-cd frontend
-npm ci
-npm run dev
-```
-
-Open the local URL printed by Vite (normally http://localhost:5173). Vite proxies `/api` requests to `http://127.0.0.1:8000`, so local development does not require adding permissive CORS to the backend. To point the frontend at a different API origin, set `VITE_API_BASE_URL` when running or building it; configure that API to allow the frontend origin as appropriate. Do not put credentials in this variable. Run frontend tests and a production build with:
-
-```bash
-npm test
-npm run build
-```
-
-The dashboard’s “Active faults” total counts vehicles whose latest state has a non-empty `fault_code`. Trend charts use the event timestamps and values returned by the history endpoint, which returns up to 50 events by default.
+- The `telemetry_events.event_id` unique constraint is enforced by PostgreSQL. The Alembic migration backfills IDs for existing rows before making the field non-null and unique, preserving existing telemetry.
+- An identical retry is recognized by comparing vehicle ID, measurements, status, fault code, and timestamp; it returns success without inserting a second history row. Reusing the ID with different event data returns `409 Conflict`. Database uniqueness and conflict recovery make concurrent duplicate submissions safe.
+- Valid older events are retained in telemetry history. The `vehicles` latest-state row is updated only when the incoming timestamp is strictly newer than `last_updated`; a delayed event therefore cannot roll current state backward.
+- The simulator retries connection failures and HTTP `429`/`5xx` responses up to three times after the first attempt. Full-jitter exponential backoff has upper bounds of 500 ms, 1 s, and 2 s for those retries (capped at 8 s by the helper). Other `4xx` responses, including validation failures, are not retried. Connect, read, and write timeouts are five seconds.
+- Stable IDs and bounded retries provide duplicate-safe retry behavior, not exactly-once delivery. A request may be accepted while its response is lost.
 
 ## C++ telemetry simulator
 
-The simulator sends one event for each vehicle to `POST /telemetry` every two seconds. It uses CMake `FetchContent` to download nlohmann/json 3.11.3 and cpp-httplib 0.18.1 at configure time; no separate C++ library installation is needed. The first configure requires network access to fetch these dependencies.
+The simulator sends one event per configured vehicle in each cycle. Defaults are five vehicles, a two-second interval, and `http://localhost:8000`. IDs are `WP-1001`, `WP-1002`, and onward. Each event receives a UUID and retains the same ID and body across retries. Ctrl+C requests a graceful stop.
 
-Install the build tools:
+Install build tools:
 
 ```bash
 # macOS
 xcode-select --install
 brew install cmake
 
-# Debian/Ubuntu Linux
+# Debian/Ubuntu
 sudo apt-get update
 sudo apt-get install build-essential cmake
 ```
 
-Configure, build, and run the simulator's unit tests:
+Configure, build, and test:
 
 ```bash
 cmake -S simulator -B simulator/build
@@ -174,118 +171,108 @@ cmake --build simulator/build --parallel
 ctest --test-dir simulator/build --output-on-failure
 ```
 
-Start the backend with `docker compose up --build` in a separate terminal, then launch the simulator:
+CMake fetches pinned nlohmann/json 3.11.3 and cpp-httplib 0.18.1 sources during configure; the initial configure therefore needs network access.
+
+Run against the local API:
 
 ```bash
 ./simulator/build/waypoint-simulator
+./simulator/build/waypoint-simulator --url http://127.0.0.1:8000 --vehicles 5 --interval 2
 ```
 
-The API URL, vehicle count, and interval (in seconds) can be overridden:
+The CLI accepts `--url`, `--vehicles`, and `--interval` (seconds). Errors and retry attempts are logged; the simulator continues after a failed event rather than terminating.
+
+## Fleet dashboard
+
+The React + TypeScript frontend reads vehicle state and history from `GET /vehicles` and `GET /vehicles/{vehicle_id}/telemetry`. It polls every five seconds, displays loading/error/empty states, and plots timestamped battery and temperature history. The client classifies IDs beginning with `BENCH-` (case-insensitive) as benchmark vehicles; this is a documented naming convention, not an API field. The default source is non-benchmark vehicles when present, otherwise the dashboard falls back to all vehicles with an explanation.
+
+For frontend development outside Docker, start the Compose backend first:
 
 ```bash
-./simulator/build/waypoint-simulator --url http://localhost:8000 --vehicles 5 --interval 2
+cd frontend
+npm ci
+npm run dev
 ```
 
-Vehicle IDs are generated as `WP-1001`, `WP-1002`, and so on. Each event gets a UUID `event_id`; the simulator reuses that ID and the same JSON body for all retries of that event. Press Ctrl+C to stop. Connection failures, retry attempts, and final HTTP errors are logged.
+Vite prints its local URL (normally `http://localhost:5173`) and proxies `/api` to `http://127.0.0.1:8000`. `VITE_API_BASE_URL` can override the frontend API base URL; do not put credentials in it.
 
-### Reliable ingestion behavior
+## Monitoring
 
-- Every `POST /telemetry` request must include a unique `event_id`. PostgreSQL enforces this with a unique constraint. The Alembic migration assigns UUIDs to existing rows before making the column non-null and unique, preserving existing telemetry.
-- Repeating an event ID with the identical vehicle, measurements, fault code, and timestamp returns HTTP 200 without adding a second history record. Reusing the ID for different event data returns HTTP 409.
-- Telemetry history retains valid events regardless of arrival order. The vehicle's current state changes only when an event timestamp is strictly newer than its current `last_updated` value; older events do not replace the latest state.
-- The simulator retries connection failures and HTTP 429/5xx responses up to three times after the initial attempt. Delays use full jitter from 0 to an exponentially increasing upper bound (500 ms, 1 s, 2 s; capped at 8 s). HTTP 4xx responses other than 429, including validation errors, are not retried. Connect, read, and write timeouts are each five seconds.
-- Retries with stable event IDs reduce duplicate event creation, but do not guarantee exactly-once delivery. A request can be accepted while its response is lost; callers should use the event ID to safely retry.
+Prometheus scrapes `backend:8000/metrics` every five seconds on the private Compose network. The FastAPI middleware records HTTP request totals by normalized method, route template, and status code, plus request duration by method and route template. Telemetry ingestion totals have only `success`/`failure` outcome labels. Vehicle IDs, event IDs, and raw paths are not metric labels.
 
-## Backend observability
-
-The backend exposes Prometheus text-format metrics at `GET /metrics`. HTTP request totals are labeled only with a normalized method, FastAPI route template, and status code; duration histograms use method and route template. Telemetry ingestion totals use only `success` or `failure` as the outcome label. Dynamic vehicle/event identifiers and raw request paths are never used as labels, and `/metrics` scrapes are excluded from request instrumentation.
-
-Start the API, PostgreSQL, Prometheus, and Grafana together:
-
-```bash
-docker compose up --build -d
-```
-
-Grafana and Prometheus ports are published on `127.0.0.1` only. Ensure the ignored `.env` file contains unique local values for `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` (merge the example entries into an existing `.env`); Compose refuses to start Grafana when either is missing. The example password is a placeholder, not a credential. Grafana reads these variables when initializing its admin account; changing them later does not rotate the password in an already-initialized Grafana data volume, so use Grafana's admin controls to rotate an existing account. The provisioned **Waypoint API** dashboard shows HTTP request rate, p50/p95 request latency, HTTP 4xx/5xx rate, and telemetry ingestion rate separated by outcome. Prometheus is available at http://localhost:9090 and scrapes the backend every five seconds.
-
-Check metrics directly:
-
-```bash
-curl http://localhost:8000/metrics
-```
-
-Counters are cumulative since the backend process started. Dashboard rates use a five-minute Prometheus rate window, so they need time and traffic to become informative. Histogram quantiles are estimates from configured buckets. This local stack provides basic instrumentation and dashboards, not alerting, authentication hardening, or a highly available monitoring deployment.
+Sign in to Grafana using the local credentials configured through `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` in `.env`. The provisioned **Waypoint API** dashboard is available at http://127.0.0.1:3000/d/waypoint-api/waypoint-api and shows HTTP request rate, p50/p95 request latency, HTTP 4xx/5xx rate, and telemetry ingestion rate. Dashboard rate queries use a five-minute window; allow time and traffic for them to become informative. Histogram quantiles are estimates from configured buckets. This stack provides basic local observability, not alerting or high availability.
 
 ## Telemetry ingestion benchmarks
 
-The standalone benchmark uses Python 3.12 and `httpx` to asynchronously submit valid telemetry directly to `POST /telemetry`. It does not change the API, retry failed requests, reset the database, or delete data. Warm-up and measured events are stored in PostgreSQL and use unique event IDs and run-scoped `BENCH-...` vehicle IDs.
+[`benchmarks/run_benchmark.py`](benchmarks/run_benchmark.py) is a standalone Python 3.12 tool using asynchronous `httpx` requests. It generates schema-valid events with run-scoped `BENCH-...` vehicle IDs and unique event IDs. Requests have a bounded semaphore and connection pool; concurrency is capped at 32 and measured event count at 1,000. The default target is `http://127.0.0.1:8000`; only plain HTTP loopback targets are accepted. It does not retry failed requests.
 
-### Safety and methodology
+Five warm-up events run before measurement by default. Warm-up and measured events are both persisted by the API in the local database. The report separates successful HTTP responses from HTTP errors and transport errors. Latency percentiles cover all measured requests, including failures; successful events per second is successful responses divided by measured wall-clock duration.
 
-- The default target is `http://127.0.0.1:8000`. Only plain HTTP URLs whose host is `localhost` or a loopback IP are accepted; public, non-loopback, credential-bearing, and HTTPS targets are rejected.
-- Concurrency is bounded by an async semaphore and HTTP connection-pool limits. The default is 8 requests at a time; the tool caps concurrency at 32 and measured events at 1,000 to limit local load.
-- Five warm-up events run before the timed phase by default. They use the same run-scoped vehicle IDs as the measured phase, so requests exercise the warmed vehicle-update path; warm-up results are reported separately and excluded from measured duration and throughput.
-- Request latency percentiles include all measured HTTP requests, including HTTP failures and transport errors. Successful events per second is successful 2xx responses divided by measured wall-clock duration. HTTP status failures and transport failures are reported separately from successful responses.
-- Payload values are seeded for repeatable generation ranges (`--seed`, default `42`); event IDs and run IDs remain randomly unique. Use the same event, vehicle, concurrency, warm-up, and seed settings to compare runs on the same environment.
-- This is a local end-to-end measurement, not a capacity guarantee. Results include client, Docker, API, and PostgreSQL effects. Repeated runs append events to the database and can affect later results; record the initial database state and run each scenario under comparable conditions.
-- For this project, the local verification environment was Python 3.12.12 on macOS ARM64, Docker Engine 29.9.2, and PostgreSQL 16.15. The Compose file does not set container CPU or memory limits, so Docker Desktop's resource allocation applies. When recording or comparing results, also record host CPU/memory, Docker resource allocation, PostgreSQL version, database size, concurrency, and whether the database was warmed by prior runs. A single local run does not establish production capacity or scalability.
-
-### Install and run
-
-Use the project Python 3.12 environment. Install the benchmark's HTTP client if it is not already available:
+Reproducible local scenarios (each uses seed `42`, five warm-up events):
 
 ```bash
 python3.12 -m pip install httpx==0.27.2
-```
-
-Start the local backend with Docker Compose, then run each reproducible scenario from the repository root:
-
-```bash
 python3.12 benchmarks/run_benchmark.py --base-url http://127.0.0.1:8000 --events 100 --vehicles 20 --concurrency 4 --warmup-events 5 --seed 42
 python3.12 benchmarks/run_benchmark.py --base-url http://127.0.0.1:8000 --events 500 --vehicles 50 --concurrency 8 --warmup-events 5 --seed 42
 python3.12 benchmarks/run_benchmark.py --base-url http://127.0.0.1:8000 --events 1000 --vehicles 100 --concurrency 8 --warmup-events 5 --seed 42
 ```
 
-Each command prints a JSON report containing configuration, warm-up results, measured duration, successful throughput, latency percentiles, successful HTTP status counts, HTTP error counts, and transport error counts. Adjust `--events`, `--vehicles`, `--concurrency`, `--warmup-events`, `--seed`, or `--base-url` within the documented safety limits.
+### Results and limitations
 
-Run the benchmark unit tests with:
+The values below are historical local measurements reported by the project owner. They were not rerun or independently verified for this documentation update. Each value represents one local run, not a repeated or statistically sampled result. No new load run was performed because benchmark events are written to the persistent PostgreSQL database.
+
+| Events | Concurrency | Successful throughput (events/s) | p50 latency | p95 latency | p99 latency |
+|---:|---:|---:|---:|---:|---:|
+| 100 | 4 | 493.51 | 7.95 ms | 10.47 ms | 12.13 ms |
+| 500 | 8 | 408.92 | 18.64 ms | 27.53 ms | 35.83 ms |
+| 1,000 | 8 | 385.70 | 20.01 ms | 29.54 ms | 38.43 ms |
+
+Run-specific environment details, vehicle counts, warm-up counts, and raw benchmark reports were not retained, so they are not inferred here. These are single-machine local measurements, not production capacity or scalability guarantees; results depend on the host, container resources, database state, concurrency, and background load. Future reports should retain the tool's JSON output and environment details.
+
+The benchmark tool reports percentiles across all measured requests, including HTTP and transport failures; throughput is successful measured responses divided by measured wall-clock duration.
+
+Run benchmark unit tests with:
 
 ```bash
 python3.12 -m unittest discover -s benchmarks -p 'test_*.py' -v
 ```
 
-## API testing examples
+## Screenshots
 
-Send a telemetry event:
+The dashboard screenshot below was captured from the running local Docker stack; it shows live API-backed state, not mock data.
 
-```bash
-curl -X POST http://localhost:8000/telemetry \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_id": "0df306c9-cc18-49cb-9f75-51489f8f3d71",
-    "vehicle_id": "VF-1001",
-    "battery_percentage": 88.5,
-    "status": "ready",
-    "temperature": 24.7,
-    "fault_code": null,
-    "timestamp": "2026-10-26T12:00:00Z"
-  }'
-```
+![Waypoint fleet dashboard](docs/screenshots/fleet-dashboard.png)
 
-List the latest state of each vehicle:
+Grafana requires authentication and the available browser session was not logged in, so no Grafana dashboard image is presented as a verified screenshot. To add one, start the monitoring stack, sign in at `http://127.0.0.1:3000` with local `.env` credentials, open the **Waypoint API** dashboard, choose a useful time range, and save a desktop capture as `docs/screenshots/grafana-dashboard.png`.
+
+## Tests and CI
+
+Backend tests (run from `backend/`):
 
 ```bash
-curl http://localhost:8000/vehicles
+python3.12 -m venv ../.venv
+source ../.venv/bin/activate
+python -m pip install -r requirements.txt
+pytest -q
 ```
 
-List recent telemetry history for one vehicle:
+By default, the API tests use isolated in-memory SQLite. CI uses a disposable PostgreSQL 16 service and applies Alembic migrations before `pytest`. The test fixture drops and recreates ORM tables, so `WAYPOINT_TEST_DATABASE_URL` must only point to a disposable test database, never to a local/shared/production database.
+
+Simulator tests are the CMake/CTest commands shown above. Frontend tests and a production build (run from `frontend/`) are:
 
 ```bash
-curl "http://localhost:8000/vehicles/VF-1001/telemetry?limit=20"
+npm ci
+npm test
+npm run build
+npm audit --audit-level=high
 ```
 
-## Notes
+Benchmark tests use the `unittest` command in the benchmark section. GitHub Actions is defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and runs independent backend, simulator, and frontend jobs on pushes to `main` and pull requests targeting `main`. CI grants `contents: read`; it does not deploy.
 
-- PostgreSQL is configured through Docker Compose and environment variables from `.env`.
-- The project intentionally does not include Kafka, Redis, or production deployment.
-- If Docker or PostgreSQL is unavailable in the local environment, the Python tests still validate the API logic with SQLite-backed session overrides, but the actual Postgres integration itself remains unverified until Docker is available.
+## Engineering tradeoffs
+
+- PostgreSQL stores immutable event history and a separately maintained latest-state row. This supports history queries and quick fleet views without adding a message broker.
+- Event uniqueness and timestamp comparisons are handled at the database/API boundary. Retries are bounded and event IDs stable, but there is no durable client queue or delivery guarantee; retries do not provide exactly-once delivery.
+- The dashboard uses five-second polling instead of a persistent stream, keeping the browser and backend integration simple.
+- The benchmark is intentionally loopback-only, bounded, and small enough for local testing. Its writes are not automatically cleaned up.
+- Docker Compose provides a convenient single-host development stack. It does not provide production secrets management, TLS ingress, alerting, horizontal scaling, or high availability.
