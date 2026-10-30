@@ -1,6 +1,6 @@
 # Waypoint
 
-Waypoint is a portfolio-quality real-time fleet telemetry platform for backend and infrastructure engineering internships. Milestone 3B adds idempotent telemetry ingestion, event ordering, and bounded simulator retries.
+Waypoint is a fleet telemetry platform with a FastAPI/PostgreSQL backend, a C++17 telemetry simulator, reproducible ingestion benchmarks, Prometheus/Grafana observability, and a React + TypeScript operations dashboard. Telemetry ingestion supports idempotent event retries, ordered vehicle state, and bounded simulator retries.
 
 ## Project structure
 
@@ -19,6 +19,7 @@ Waypoint is a portfolio-quality real-time fleet telemetry platform for backend a
 - `benchmarks/` – standalone asynchronous telemetry ingestion benchmark and Python tests.
 - `docker-compose.yml` – local orchestration for the backend and PostgreSQL database.
 - `monitoring/` – Prometheus scrape configuration and provisioned Grafana dashboard.
+- `frontend/` – React + TypeScript fleet operations dashboard.
 - `.env.example` – template for environment variables.
 - `.gitignore` – excludes local environment and dependency files.
 - `README.md` – setup, migration, testing, and API usage instructions.
@@ -100,6 +101,27 @@ cd backend
 source ../.venv/bin/activate
 pytest -q
 ```
+
+## Fleet operations frontend
+
+The frontend is a React + TypeScript dashboard that reads live vehicle state and telemetry history from the existing `GET /vehicles` and `GET /vehicles/{vehicle_id}/telemetry` API endpoints. It refreshes every five seconds, displays vehicle status, battery, temperature, current fault codes, and timestamped history trends, and does not include simulated or fallback data. The source filter classifies an ID as a benchmark vehicle when it begins with `BENCH-` (case-insensitive); this is a client-side naming convention, not an API field. It defaults to non-benchmark vehicles when any are present, otherwise selects **All vehicles** and explains the fallback. Fleet summary metrics use the selected source. Search and status filters further narrow the table, which is paginated locally at 25 rows per page; changing filters returns to page 1. Selecting a vehicle shows its latest state and the real timestamped history returned by the API.
+
+Start the backend using the Docker Compose instructions above. In a separate terminal, install frontend dependencies and launch Vite:
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+Open the local URL printed by Vite (normally http://localhost:5173). Vite proxies `/api` requests to `http://127.0.0.1:8000`, so local development does not require adding permissive CORS to the backend. To point the frontend at a different API origin, set `VITE_API_BASE_URL` when running or building it; configure that API to allow the frontend origin as appropriate. Do not put credentials in this variable. Run frontend tests and a production build with:
+
+```bash
+npm test
+npm run build
+```
+
+The dashboard’s “Active faults” total counts vehicles whose latest state has a non-empty `fault_code`. Trend charts use the event timestamps and values returned by the history endpoint, which returns up to 50 events by default.
 
 ## C++ telemetry simulator
 
@@ -238,5 +260,5 @@ curl "http://localhost:8000/vehicles/VF-1001/telemetry?limit=20"
 ## Notes
 
 - PostgreSQL is configured through Docker Compose and environment variables from `.env`.
-- The project intentionally does not include Kafka, Redis, frontend work, or production deployment.
+- The project intentionally does not include Kafka, Redis, or production deployment.
 - If Docker or PostgreSQL is unavailable in the local environment, the Python tests still validate the API logic with SQLite-backed session overrides, but the actual Postgres integration itself remains unverified until Docker is available.
