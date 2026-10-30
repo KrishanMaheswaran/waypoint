@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: waypoint_ci
+          POSTGRES_USER: waypoint_ci
+          POSTGRES_PASSWORD: waypoint_ci_test_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U waypoint_ci -d waypoint_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      POSTGRES_DB: waypoint_ci
+      POSTGRES_USER: waypoint_ci
+      POSTGRES_PASSWORD: waypoint_ci_test_only
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
+      DATABASE_URL: postgresql+psycopg://waypoint_ci:waypoint_ci_test_only@127.0.0.1:5432/waypoint_ci
+      WAYPOINT_TEST_DATABASE_URL: postgresql+psycopg://waypoint_ci:waypoint_ci_test_only@127.0.0.1:5432/waypoint_ci
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Apply database migrations
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Run backend tests
+        working-directory: backend
+        run: pytest -q
+
+  simulator:
+    name: C++ simulator tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install C++ build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y cmake g++ make
+
+      - name: Configure CMake
+        run: cmake -S simulator -B simulator/build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build simulator and tests
+        run: cmake --build simulator/build --parallel 2
+
+      - name: Run CTest
+        run: ctest --test-dir simulator/build --output-on-failure
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Audit frontend dependencies
+        working-directory: frontend
+        run: npm audit --audit-level=high

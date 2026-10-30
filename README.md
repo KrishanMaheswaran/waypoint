@@ -102,6 +102,10 @@ source ../.venv/bin/activate
 pytest -q
 ```
 
+## Continuous integration
+
+GitHub Actions runs independent backend, C++ simulator, and frontend jobs for pushes to `main` and pull requests targeting `main`. The backend job starts a disposable PostgreSQL 16 service with test-only credentials, applies Alembic migrations, and runs pytest with `WAYPOINT_TEST_DATABASE_URL` directed at that service. Outside CI, the telemetry API tests keep using isolated in-memory SQLite unless that explicit test-only variable is set. The PostgreSQL test fixture drops and recreates its ORM tables, so only set `WAYPOINT_TEST_DATABASE_URL` to a disposable test database, never to a local, shared, or production database. The simulator job installs CMake and a C++ compiler, then configures, builds, and runs CTest; CMake fetches the simulator's JSON and HTTP dependencies. The frontend job uses Node.js 22, `npm ci`, the test/build scripts, and a high-severity npm audit check.
+
 ## Fleet operations frontend
 
 The frontend is a React + TypeScript dashboard that reads live vehicle state and telemetry history from the existing `GET /vehicles` and `GET /vehicles/{vehicle_id}/telemetry` API endpoints. It refreshes every five seconds, displays vehicle status, battery, temperature, current fault codes, and timestamped history trends, and does not include simulated or fallback data. The source filter classifies an ID as a benchmark vehicle when it begins with `BENCH-` (case-insensitive); this is a client-side naming convention, not an API field. It defaults to non-benchmark vehicles when any are present, otherwise selects **All vehicles** and explains the fallback. Fleet summary metrics use the selected source. Search and status filters further narrow the table, which is paginated locally at 25 rows per page; changing filters returns to page 1. Selecting a vehicle shows its latest state and the real timestamped history returned by the API.
