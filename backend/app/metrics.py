@@ -20,7 +20,12 @@ HTTP_REQUEST_DURATION = Histogram(
 )
 TELEMETRY_INGESTION_EVENTS = Counter(
     "waypoint_telemetry_ingestion_events",
-    "Telemetry ingestion requests by outcome.",
+    "Telemetry API requests by HTTP outcome.",
+    ("outcome",),
+)
+TELEMETRY_PUBLISH_EVENTS = Counter(
+    "waypoint_telemetry_publish_events",
+    "Telemetry events acknowledged or rejected by the Kafka producer.",
     ("outcome",),
 )
 

@@ -21,6 +21,14 @@ class Settings:
         "DATABASE_URL",
         f"postgresql+psycopg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}",
     )
+    KAFKA_BOOTSTRAP_SERVERS: Final[str] = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    KAFKA_TOPIC: Final[str] = os.getenv("KAFKA_TOPIC", "waypoint.telemetry")
+    KAFKA_CONSUMER_GROUP: Final[str] = os.getenv(
+        "KAFKA_CONSUMER_GROUP",
+        "waypoint-telemetry-persistence",
+    )
+    KAFKA_PARTITIONS: Final[int] = int(os.getenv("KAFKA_PARTITIONS", "3"))
+    KAFKA_METRICS_PORT: Final[int] = int(os.getenv("KAFKA_METRICS_PORT", "8001"))
 
 
 settings = Settings()

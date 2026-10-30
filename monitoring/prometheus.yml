@@ -8,3 +8,9 @@ scrape_configs:
     static_configs:
       - targets:
           - backend:8000
+
+  - job_name: waypoint-consumer
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - consumer:8001

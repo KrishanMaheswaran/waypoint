@@ -55,7 +55,9 @@ def test_request_metrics_use_route_templates_and_bounded_labels() -> None:
     assert "unmatched-path-with-an-identifier" not in metrics
 
 
-def test_telemetry_ingestion_counters_track_success_and_failure() -> None:
+def test_telemetry_ingestion_counters_track_publish_acceptance_and_failure(
+    publisher,
+) -> None:
     response = client.post(
         "/telemetry",
         json={
@@ -68,7 +70,7 @@ def test_telemetry_ingestion_counters_track_success_and_failure() -> None:
             "timestamp": "2026-10-29T12:00:00Z",
         },
     )
-    duplicate_conflict = client.post(
+    duplicate_delivery = client.post(
         "/telemetry",
         json={
             "event_id": "metrics-test-event",
@@ -81,10 +83,25 @@ def test_telemetry_ingestion_counters_track_success_and_failure() -> None:
         },
     )
 
-    assert response.status_code == 201
-    assert duplicate_conflict.status_code == 409
+    assert response.status_code == 202
+    assert duplicate_delivery.status_code == 202
+    publisher.unavailable = True
+    unavailable = client.post(
+        "/telemetry",
+        json={
+            "event_id": "metrics-broker-unavailable",
+            "vehicle_id": "METRICS-TEST-VEHICLE-2",
+            "battery_percentage": 60,
+            "status": "ready",
+            "temperature": 23,
+            "fault_code": None,
+            "timestamp": "2026-10-29T12:00:00Z",
+        },
+    )
+    assert unavailable.status_code == 503
     metrics = client.get("/metrics").text
     assert metric_value(metrics, "waypoint_telemetry_ingestion_events_total", 'outcome="success"') >= 1
     assert metric_value(metrics, "waypoint_telemetry_ingestion_events_total", 'outcome="failure"') >= 1
+    assert "# TYPE waypoint_telemetry_publish_events_total counter" in metrics
     assert "METRICS-TEST-VEHICLE" not in metrics
     assert "metrics-test-event" not in metrics

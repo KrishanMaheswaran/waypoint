@@ -18,6 +18,10 @@ void require(bool condition, const char* message) {
 }
 
 int main() {
+    require(waypoint::isSuccessfulHttpStatus(200), "HTTP 200 is successful");
+    require(waypoint::isSuccessfulHttpStatus(201), "HTTP 201 is successful");
+    require(waypoint::isSuccessfulHttpStatus(202), "HTTP 202 accepted is successful");
+    require(!waypoint::isSuccessfulHttpStatus(400), "HTTP 400 is not successful");
     require(waypoint::shouldRetry(std::nullopt), "connection failures are retryable");
     require(waypoint::shouldRetry(429), "HTTP 429 is retryable");
     require(waypoint::shouldRetry(500), "HTTP 500 is retryable");

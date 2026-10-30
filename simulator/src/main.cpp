@@ -126,7 +126,7 @@ int main(int argc, char* argv[]) {
             const auto request_body = waypoint::serializeTelemetry(event);
             for (unsigned int retry = 0; running; ++retry) {
                 const auto response = client.Post("/telemetry", request_body, "application/json");
-                if (response && response->status >= 200 && response->status < 300) {
+                if (response && waypoint::isSuccessfulHttpStatus(response->status)) {
                     std::cout << "POST /telemetry " << vehicle_id << " event "
                               << event.event_id << ": HTTP " << response->status << '\n';
                     break;

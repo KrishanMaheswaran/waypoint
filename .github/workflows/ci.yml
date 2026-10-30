@@ -63,6 +63,69 @@ jobs:
         working-directory: backend
         run: pytest -q
 
+      - name: Run isolated Kafka ingestion smoke test
+        run: |
+          compose=(docker compose -f backend/tests/docker-compose.kafka-smoke.yml -p waypoint-ci-kafka-smoke)
+          "${compose[@]}" up -d db redpanda
+          "${compose[@]}" run --build --rm kafka-init
+          "${compose[@]}" run --build --rm backend alembic upgrade head
+          "${compose[@]}" up --build -d backend consumer
+          python - <<'PY'
+          import json
+          import time
+          import urllib.request
+          import uuid
+          from datetime import datetime, timezone
+
+          base_url = "http://127.0.0.1:18000"
+          for _ in range(60):
+              try:
+                  with urllib.request.urlopen(f"{base_url}/health", timeout=5) as response:
+                      if response.status == 200:
+                          break
+              except OSError:
+                  time.sleep(1)
+          else:
+              raise SystemExit("API did not become healthy within 60 seconds")
+
+          vehicle_id = f"CI-SMOKE-{uuid.uuid4()}"
+          payload = {
+              "event_id": str(uuid.uuid4()),
+              "vehicle_id": vehicle_id,
+              "battery_percentage": 81.5,
+              "status": "ready",
+              "temperature": 23.5,
+              "fault_code": None,
+              "timestamp": datetime.now(timezone.utc).isoformat(),
+          }
+          request = urllib.request.Request(
+              f"{base_url}/telemetry",
+              data=json.dumps(payload).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(request, timeout=10) as response:
+              assert response.status == 202
+              assert response.headers["X-Waypoint-Delivery"] == "broker-acknowledged"
+
+          for _ in range(60):
+              with urllib.request.urlopen(f"{base_url}/vehicles", timeout=5) as response:
+                  vehicles = json.load(response)
+              vehicle = next(
+                  (item for item in vehicles if item["vehicle_id"] == vehicle_id),
+                  None,
+              )
+              if vehicle and vehicle["battery_percentage"] == payload["battery_percentage"]:
+                  print("Kafka-to-PostgreSQL smoke test passed")
+                  break
+              time.sleep(1)
+          else:
+              raise SystemExit("Telemetry was not persisted by the consumer within 60 seconds")
+          PY
+
+      - name: Stop isolated Kafka smoke-test services
+        if: always()
+        run: docker compose -f backend/tests/docker-compose.kafka-smoke.yml -p waypoint-ci-kafka-smoke stop
+
   simulator:
     name: C++ simulator tests
     runs-on: ubuntu-latest

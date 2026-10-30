@@ -1,127 +1,33 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import TelemetryEvent, Vehicle
+from app.publisher import PublishUnavailable, TelemetryPublisher, get_publisher
 from app.schemas import TelemetryCreate, VehicleState, VehicleTelemetryHistory
 
 router = APIRouter()
 
 
-def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _matches_event(event: TelemetryEvent, payload: TelemetryCreate) -> bool:
-    return (
-        event.vehicle.vehicle_id == payload.vehicle_id
-        and event.battery_percentage == payload.battery_percentage
-        and event.status == payload.status
-        and event.temperature == payload.temperature
-        and event.fault_code == payload.fault_code
-        and _as_utc(event.timestamp) == _as_utc(payload.timestamp)
-    )
-
-
-def _get_or_create_vehicle(db: Session, payload: TelemetryCreate) -> Vehicle:
-    vehicle = db.scalar(
-        select(Vehicle)
-        .where(Vehicle.vehicle_id == payload.vehicle_id)
-        .with_for_update()
-    )
-    if vehicle is not None:
-        return vehicle
-
-    try:
-        with db.begin_nested():
-            vehicle = Vehicle(
-                vehicle_id=payload.vehicle_id,
-                battery_percentage=payload.battery_percentage,
-                status=payload.status,
-                temperature=payload.temperature,
-                fault_code=payload.fault_code,
-                last_updated=payload.timestamp,
-            )
-            db.add(vehicle)
-            db.flush()
-    except IntegrityError:
-        vehicle = db.scalar(
-            select(Vehicle)
-            .where(Vehicle.vehicle_id == payload.vehicle_id)
-            .with_for_update()
-        )
-        if vehicle is None:
-            raise
-
-    return vehicle
-
-
-def _handle_duplicate(
-    event: TelemetryEvent | None,
+@router.post("/telemetry", status_code=status.HTTP_202_ACCEPTED, response_model=TelemetryCreate)
+async def create_telemetry(
     payload: TelemetryCreate,
     response: Response,
-) -> TelemetryCreate | None:
-    if event is None:
-        return None
-    if not _matches_event(event, payload):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"event_id '{payload.event_id}' was already used for a different event",
-        )
-    response.status_code = status.HTTP_200_OK
-    return payload
-
-
-@router.post("/telemetry", status_code=status.HTTP_201_CREATED, response_model=TelemetryCreate)
-def create_telemetry(
-    payload: TelemetryCreate,
-    response: Response,
-    db: Session = Depends(get_db),
+    publisher: TelemetryPublisher = Depends(get_publisher),
 ) -> TelemetryCreate:
-    """Persist an event once and update state only when its timestamp is newer."""
-    existing = db.scalar(select(TelemetryEvent).where(TelemetryEvent.event_id == payload.event_id))
-    duplicate = _handle_duplicate(existing, payload, response)
-    if duplicate is not None:
-        return duplicate
-
     try:
-        vehicle = _get_or_create_vehicle(db, payload)
-        event = TelemetryEvent(
-            event_id=payload.event_id,
-            vehicle_id=vehicle.id,
-            battery_percentage=payload.battery_percentage,
-            status=payload.status,
-            temperature=payload.temperature,
-            fault_code=payload.fault_code,
-            timestamp=payload.timestamp,
-        )
-        db.add(event)
-        db.flush()
+        await publisher.publish(payload)
+    except PublishUnavailable as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="telemetry broker is unavailable; retry with the same event_id",
+            headers={"Retry-After": "1"},
+        ) from error
 
-        if _as_utc(payload.timestamp) > _as_utc(vehicle.last_updated):
-            vehicle.battery_percentage = payload.battery_percentage
-            vehicle.status = payload.status
-            vehicle.temperature = payload.temperature
-            vehicle.fault_code = payload.fault_code
-            vehicle.last_updated = payload.timestamp
-
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        existing = db.scalar(select(TelemetryEvent).where(TelemetryEvent.event_id == payload.event_id))
-        duplicate = _handle_duplicate(existing, payload, response)
-        if duplicate is not None:
-            return duplicate
-        raise
-
+    response.headers["X-Waypoint-Delivery"] = "broker-acknowledged"
     return payload
 
 

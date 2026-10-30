@@ -1,13 +1,14 @@
 # Waypoint
 
-Waypoint is a local fleet telemetry system built around a FastAPI API and PostgreSQL event store. A C++17 simulator generates vehicle readings, a React dashboard displays current state and history, and Prometheus/Grafana provide basic service observability. The repository also includes a loopback-only asynchronous ingestion benchmark and GitHub Actions CI.
+Waypoint is a local fleet telemetry system built around FastAPI, a Kafka-compatible event stream, and PostgreSQL. A C++17 simulator generates vehicle readings, a React dashboard displays current state and history, and Prometheus/Grafana provide service observability. The repository also includes a loopback-only asynchronous ingestion benchmark and GitHub Actions CI.
 
 The project is intended for local development and demonstration. It is not a highly available or production deployment.
 
 ## Engineering features
 
 - Validated telemetry ingestion with durable PostgreSQL event history and Alembic-managed schema changes.
-- Database-enforced event ID uniqueness, safe handling of identical retries, conflict detection, and timestamp-aware latest vehicle state.
+- Kafka-backed asynchronous ingestion with vehicle-keyed partitioning, manual consumer offset commits, and database-enforced event ID idempotency.
+- Safe handling of identical retries, durable recording of conflicting/invalid broker records, and timestamp-aware latest vehicle state.
 - C++17 simulator with configurable target, vehicle count, and interval; bounded retries for transient errors.
 - Responsive React + TypeScript fleet dashboard using the existing API, with status/source filters, search, pagination, and historical trends.
 - Low-cardinality Prometheus HTTP and ingestion metrics, a configured scrape target, and a provisioned Grafana dashboard.
@@ -21,12 +22,16 @@ The solid arrows below are runtime traffic. The dashed arrows belong to CI and i
 ```mermaid
 flowchart LR
   subgraph Runtime["Runtime — Docker Compose"]
-    Simulator["C++17 telemetry simulator"] -->|"POST /telemetry"| API["FastAPI"]
+    Simulator["C++17 telemetry simulator"] -->|"POST /telemetry"| API["FastAPI producer"]
+    API -->|"key = vehicle_id"| Broker["Redpanda / Kafka-compatible broker"]
+    Broker -->|"manual offset commit after DB handling"| Consumer["Telemetry consumer"]
+    Consumer -->|"SQLAlchemy persistence"| PostgreSQL[("PostgreSQL 16")]
     Browser["Operator browser"] -->|"HTTP"| Nginx["Nginx frontend"]
     Nginx -->|"/api/* (prefix removed)"| API
-    API -->|"SQLAlchemy reads/writes"| PostgreSQL[("PostgreSQL 16")]
+    API -->|"vehicle state/history reads"| PostgreSQL
     Alembic["Alembic migrations"] -.->|"schema changes"| PostgreSQL
     Prometheus["Prometheus"] -->|"scrape GET /metrics"| API
+    Prometheus -->|"scrape consumer metrics"| Consumer
     Grafana["Grafana dashboard"] -->|"PromQL"| Prometheus
   end
 
@@ -43,7 +48,7 @@ flowchart LR
 | Area | Components |
 |---|---|
 | API and validation | Python 3.12, FastAPI, Pydantic |
-| Persistence | PostgreSQL 16, SQLAlchemy 2, Alembic |
+| Persistence and stream | PostgreSQL 16, SQLAlchemy 2, Alembic, Redpanda (Kafka API), aiokafka |
 | Simulator | C++17, CMake, cpp-httplib, nlohmann/json |
 | Web UI | React 18, TypeScript, Vite |
 | Serving and monitoring | Nginx, Prometheus, Grafana |
@@ -61,7 +66,7 @@ Prerequisites: Docker Desktop or Docker Engine with the Compose plugin, and Git.
 
    If `.env` already exists, preserve it and merge any missing keys from `.env.example`. Updating `.env` does not rotate credentials already stored in initialized PostgreSQL or Grafana volumes.
 
-2. Build the backend image, start PostgreSQL, and apply migrations:
+2. Build the backend image, start PostgreSQL, and apply migrations. This command applies schema changes to the existing named PostgreSQL volume without deleting or resetting its data:
 
    ```bash
    docker compose build backend
@@ -69,7 +74,7 @@ Prerequisites: Docker Desktop or Docker Engine with the Compose plugin, and Git.
    docker compose run --rm backend alembic upgrade head
    ```
 
-3. Build and start the application and monitoring services:
+3. Build and start the application, Redpanda broker, telemetry consumer, and monitoring services:
 
    ```bash
    docker compose up --build -d
@@ -88,17 +93,22 @@ Prerequisites: Docker Desktop or Docker Engine with the Compose plugin, and Git.
 |---|---|
 | React dashboard via Nginx | http://127.0.0.1:8080 |
 | FastAPI | http://127.0.0.1:8000 |
+| Kafka-compatible broker (host clients) | localhost:19092 |
 | Prometheus | http://127.0.0.1:9090 |
 | Grafana | http://127.0.0.1:3000 |
 
-The dashboard reaches the API through Nginx at `/api/...`; Nginx removes the `/api` prefix before proxying. Direct API access is also published for local development. Published ports bind to loopback by default. Compose keeps `postgres_data`, `prometheus_data`, and `grafana_data` as named persistent volumes. Use `docker compose stop` to stop services without removing their data.
+The dashboard reaches the API through Nginx at `/api/...`; Nginx removes the `/api` prefix before proxying. Direct API access is also published for local development. Published ports bind to loopback by default. Compose keeps `postgres_data`, `redpanda_data`, `prometheus_data`, and `grafana_data` as named persistent volumes. Use `docker compose stop` to stop services without removing their data.
 
-To apply later schema migrations, run `docker compose run --rm backend alembic upgrade head`. Migrations are not run automatically when the backend container starts.
+The single-node Redpanda broker is for local development only; it is not highly available. The API publishes events to `waypoint.telemetry`, partitioned by `vehicle_id`, and the consumer stores them in PostgreSQL. Broker durability and database persistence are separate stages.
+
+To apply later schema migrations, run `docker compose run --rm backend alembic upgrade head`. The Milestone 7A migration adds the ingestion-rejection audit table; it does not delete or rewrite existing telemetry. Migrations are not run automatically when the backend container starts.
 
 ### Troubleshooting
 
-- Use `docker compose ps` and `docker compose logs --tail=100 db backend frontend prometheus grafana` to inspect service state and startup errors.
+- Use `docker compose ps` and `docker compose logs --tail=100 db redpanda kafka-init backend consumer frontend prometheus grafana` to inspect service state and startup errors.
 - The backend depends on a healthy database. Confirm its Compose connection uses host `db` and container port `5432`; `127.0.0.1` is for host-side connections.
+- If the broker is not healthy, confirm `redpanda` is running and `kafka-init` completed successfully; backend and consumer use the internal address `redpanda:9092`.
+- A successful `POST /telemetry` means the broker acknowledged the event, not that the consumer has committed it to PostgreSQL. Check consumer logs and metrics while waiting for persistence.
 - Compose requires `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_USER`, and `GRAFANA_ADMIN_PASSWORD` in `.env`. Never commit the local `.env`.
 - If an initialized PostgreSQL or Grafana volume contains different credentials, changing `.env` alone does not change the persisted account password.
 - If `/api/health` fails, check backend health and frontend logs, and confirm Nginx can resolve the `backend` Compose service.
@@ -111,7 +121,7 @@ The public API is implemented in [`backend/app/routes.py`](backend/app/routes.py
 |---|---|
 | `GET /health` | Returns `{"status":"ok"}` when the API process responds. |
 | `GET /metrics` | Exposes Prometheus text-format metrics; excluded from HTTP request instrumentation. |
-| `POST /telemetry` | Validates and stores one telemetry event. New event: `201`; identical event retry: `200`; event ID reused for different content: `409`; invalid payload: `422`. |
+| `POST /telemetry` | Validates and publishes one telemetry event to Kafka. Returns `202` after broker acknowledgment, not after PostgreSQL persistence; invalid payload: `422`; broker unavailable after bounded retries: `503`. |
 | `GET /vehicles` | Returns each vehicle's latest known state. |
 | `GET /vehicles/{vehicle_id}/telemetry?limit=50` | Returns recent event history, newest timestamp first. `limit` must be between 1 and 1000; default is 50. |
 
@@ -142,10 +152,13 @@ The public API is implemented in [`backend/app/routes.py`](backend/app/routes.py
 ### Idempotency and event ordering
 
 - The `telemetry_events.event_id` unique constraint is enforced by PostgreSQL. The Alembic migration backfills IDs for existing rows before making the field non-null and unique, preserving existing telemetry.
-- An identical retry is recognized by comparing vehicle ID, measurements, status, fault code, and timestamp; it returns success without inserting a second history row. Reusing the ID with different event data returns `409 Conflict`. Database uniqueness and conflict recovery make concurrent duplicate submissions safe.
+- `POST /telemetry` returns `202 Accepted` when Kafka acknowledges the keyed record. The `X-Waypoint-Delivery: broker-acknowledged` response header identifies this boundary; it is not a database-persistence acknowledgment. A `503` means bounded publish attempts failed and includes `Retry-After: 1`; retry with the same `event_id`.
+- The consumer commits Kafka offsets only after successful PostgreSQL persistence. Identical event replay is recognized by comparing vehicle ID, measurements, status, fault code, and timestamp; it creates no second history row. Database uniqueness and conflict recovery make duplicate delivery safe. This is at-least-once processing with database-enforced idempotency, not exactly-once processing.
+- The same `event_id` with different event content is detected by the consumer after the API may already have returned `202`. The conflicting record is durably recorded in `telemetry_ingestion_failures`, logged, and then its offset is committed so it does not block the partition. There is no synchronous conflict response or event-status lookup route.
 - Valid older events are retained in telemetry history. The `vehicles` latest-state row is updated only when the incoming timestamp is strictly newer than `last_updated`; a delayed event therefore cannot roll current state backward.
-- The simulator retries connection failures and HTTP `429`/`5xx` responses up to three times after the first attempt. Full-jitter exponential backoff has upper bounds of 500 ms, 1 s, and 2 s for those retries (capped at 8 s by the helper). Other `4xx` responses, including validation failures, are not retried. Connect, read, and write timeouts are five seconds.
-- Stable IDs and bounded retries provide duplicate-safe retry behavior, not exactly-once delivery. A request may be accepted while its response is lost.
+- Messages are partitioned by `vehicle_id` to preserve broker order within each vehicle's partition. This does not guarantee timestamp order; the database's strict-newer timestamp check remains the safeguard for vehicle state.
+- The API producer and consumer use bounded retries with jitter. Producer publish attempts are limited to three with five-second per-attempt timeouts; the simulator treats every `2xx` response, including `202`, as success and retries connection failures and HTTP `429`/`5xx` responses up to three times after the initial attempt. Stable event IDs make retry/replay safe.
+- Consumer validation failures and reused event IDs with conflicting content are written to `telemetry_ingestion_failures` before offsets are committed. Transient database or broker commit errors are retried a bounded number of times; an exhausted retry causes the consumer process to exit so Compose can restart it from the last committed offset. The worker handles SIGINT/SIGTERM and Compose allows 20 seconds for orderly shutdown.
 
 ## C++ telemetry simulator
 
@@ -198,7 +211,7 @@ Vite prints its local URL (normally `http://localhost:5173`) and proxies `/api` 
 
 ## Monitoring
 
-Prometheus scrapes `backend:8000/metrics` every five seconds on the private Compose network. The FastAPI middleware records HTTP request totals by normalized method, route template, and status code, plus request duration by method and route template. Telemetry ingestion totals have only `success`/`failure` outcome labels. Vehicle IDs, event IDs, and raw paths are not metric labels.
+Prometheus scrapes `backend:8000/metrics` and the consumer metrics endpoint on port `8001` every five seconds on the private Compose network. FastAPI records HTTP request totals by normalized method, route template, and status code, plus request duration by method and route template. Kafka publish outcomes, consumer outcomes/failures, and partition lag are also exposed. Labels use bounded outcome/reason values and topic/partition; vehicle IDs and event IDs are not metric labels. `/metrics` is excluded from HTTP request metrics.
 
 Sign in to Grafana using the local credentials configured through `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` in `.env`. The provisioned **Waypoint API** dashboard is available at http://127.0.0.1:3000/d/waypoint-api/waypoint-api and shows HTTP request rate, p50/p95 request latency, HTTP 4xx/5xx rate, and telemetry ingestion rate. Dashboard rate queries use a five-minute window; allow time and traffic for them to become informative. Histogram quantiles are estimates from configured buckets. This stack provides basic local observability, not alerting or high availability.
 
@@ -206,7 +219,7 @@ Sign in to Grafana using the local credentials configured through `GRAFANA_ADMIN
 
 [`benchmarks/run_benchmark.py`](benchmarks/run_benchmark.py) is a standalone Python 3.12 tool using asynchronous `httpx` requests. It generates schema-valid events with run-scoped `BENCH-...` vehicle IDs and unique event IDs. Requests have a bounded semaphore and connection pool; concurrency is capped at 32 and measured event count at 1,000. The default target is `http://127.0.0.1:8000`; only plain HTTP loopback targets are accepted. It does not retry failed requests.
 
-Five warm-up events run before measurement by default. Warm-up and measured events are both persisted by the API in the local database. The report separates successful HTTP responses from HTTP errors and transport errors. Latency percentiles cover all measured requests, including failures; successful events per second is successful responses divided by measured wall-clock duration.
+Five warm-up events run before measurement by default. Warm-up and measured events are both published to the broker. The report separates successful HTTP responses from HTTP errors and transport errors. Latency percentiles cover all measured requests, including failures; successful events per second is successful responses divided by measured wall-clock duration. With asynchronous ingestion, an HTTP success measures broker acknowledgment, not completion of PostgreSQL persistence; inspect consumer lag separately.
 
 Reproducible local scenarios (each uses seed `42`, five warm-up events):
 
@@ -219,7 +232,7 @@ python3.12 benchmarks/run_benchmark.py --base-url http://127.0.0.1:8000 --events
 
 ### Results and limitations
 
-The values below are historical local measurements reported by the project owner. They were not rerun or independently verified for this documentation update. Each value represents one local run, not a repeated or statistically sampled result. No new load run was performed because benchmark events are written to the persistent PostgreSQL database.
+The values below are historical local measurements reported by the project owner, from before the Kafka-backed Milestone 7A ingestion path. They were not rerun or independently verified for this documentation update and do not measure broker-acknowledgment performance. Each value represents one local run, not a repeated or statistically sampled result. No new load run was performed because benchmark events are written to the persistent PostgreSQL database.
 
 | Events | Concurrency | Successful throughput (events/s) | p50 latency | p95 latency | p99 latency |
 |---:|---:|---:|---:|---:|---:|
@@ -256,7 +269,23 @@ python -m pip install -r requirements.txt
 pytest -q
 ```
 
-By default, the API tests use isolated in-memory SQLite. CI uses a disposable PostgreSQL 16 service and applies Alembic migrations before `pytest`. The test fixture drops and recreates ORM tables, so `WAYPOINT_TEST_DATABASE_URL` must only point to a disposable test database, never to a local/shared/production database.
+By default, the API and consumer tests use isolated in-memory SQLite. CI uses a disposable PostgreSQL 16 service and applies Alembic migrations before `pytest`; it also runs the Kafka ingestion smoke test in a separate Compose project with temporary PostgreSQL and Redpanda storage. The API test fixture drops and recreates ORM tables when `WAYPOINT_TEST_DATABASE_URL` is set, so that variable must only point to a disposable test database, never to the persistent local/shared/production database.
+
+Run the end-to-end Kafka smoke test in its separate Compose project. Its PostgreSQL and Redpanda data directories are tmpfs, and it does not connect to the normal Waypoint PostgreSQL volume:
+
+```bash
+docker compose -f backend/tests/docker-compose.kafka-smoke.yml -p waypoint-m7a-smoke up -d db redpanda
+docker compose -f backend/tests/docker-compose.kafka-smoke.yml -p waypoint-m7a-smoke run --build --rm kafka-init
+docker compose -f backend/tests/docker-compose.kafka-smoke.yml -p waypoint-m7a-smoke run --build --rm backend alembic upgrade head
+docker compose -f backend/tests/docker-compose.kafka-smoke.yml -p waypoint-m7a-smoke up --build -d backend consumer
+curl --fail -i -H 'Content-Type: application/json' \
+  -d '{"event_id":"replace-with-a-unique-id","vehicle_id":"M7A-SMOKE-1","battery_percentage":80,"status":"ready","temperature":24,"fault_code":null,"timestamp":"2026-10-30T12:00:00Z"}' \
+  http://127.0.0.1:18000/telemetry
+curl --fail http://127.0.0.1:18000/vehicles
+docker compose -f backend/tests/docker-compose.kafka-smoke.yml -p waypoint-m7a-smoke stop
+```
+
+The POST response should be `202` with `X-Waypoint-Delivery: broker-acknowledged`; poll `GET /vehicles` until the consumer has persisted the event. Use a fresh event ID for each run. `stop` preserves the isolated containers while running; no command here alters the normal Waypoint volumes.
 
 Simulator tests are the CMake/CTest commands shown above. Frontend tests and a production build (run from `frontend/`) are:
 
@@ -271,8 +300,9 @@ Benchmark tests use the `unittest` command in the benchmark section. GitHub Acti
 
 ## Engineering tradeoffs
 
-- PostgreSQL stores immutable event history and a separately maintained latest-state row. This supports history queries and quick fleet views without adding a message broker.
-- Event uniqueness and timestamp comparisons are handled at the database/API boundary. Retries are bounded and event IDs stable, but there is no durable client queue or delivery guarantee; retries do not provide exactly-once delivery.
+- Redpanda decouples API acceptance from database persistence. A single local broker is easy to run but is neither highly available nor a production Kafka deployment.
+- PostgreSQL stores event history and a separately maintained latest-state row. Kafka offsets are committed only after persistence, so restarts can replay records; database idempotency prevents duplicate history rows but processing is not exactly once.
+- A broker-acknowledged request may later be rejected by the consumer for an event ID conflict or invalid broker record. The rejection is logged and stored, but the client has no delivery-status query endpoint.
 - The dashboard uses five-second polling instead of a persistent stream, keeping the browser and backend integration simple.
 - The benchmark is intentionally loopback-only, bounded, and small enough for local testing. Its writes are not automatically cleaned up.
 - Docker Compose provides a convenient single-host development stack. It does not provide production secrets management, TLS ingress, alerting, horizontal scaling, or high availability.

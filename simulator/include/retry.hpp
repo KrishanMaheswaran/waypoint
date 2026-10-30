@@ -12,6 +12,10 @@ inline constexpr unsigned int max_retries = 3;
 inline constexpr std::chrono::milliseconds retry_base_delay{500};
 inline constexpr std::chrono::milliseconds retry_max_delay{8000};
 
+inline bool isSuccessfulHttpStatus(int status) {
+    return status >= 200 && status < 300;
+}
+
 inline bool shouldRetry(std::optional<int> http_status) {
     return !http_status.has_value() || *http_status == 429 || (*http_status >= 500 && *http_status < 600);
 }

@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "HTTP and telemetry ingestion health for the Waypoint API.",
+  "description": "HTTP, Kafka delivery, and telemetry persistence health for Waypoint.",
   "editable": false,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -168,12 +168,92 @@
       },
       "targets": [
         {
-          "expr": "sum by (outcome) (rate(waypoint_telemetry_ingestion_events_total[5m]))",
+          "expr": "sum by (outcome) (rate(waypoint_kafka_consumer_events_total[5m]))",
           "legendFormat": "{{outcome}}",
           "refId": "A"
         }
       ],
-      "title": "Telemetry ingestion rate",
+      "title": "Telemetry database processing rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(waypoint_telemetry_publish_events_total[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Kafka publish rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "waypoint_kafka_consumer_lag",
+          "legendFormat": "partition {{partition}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Kafka consumer lag",
       "type": "timeseries"
     }
   ],
