@@ -29,6 +29,8 @@ flowchart LR
     Browser["Operator browser"] -->|"HTTP"| Nginx["Nginx frontend"]
     Nginx -->|"/api/* (prefix removed)"| API
     API -->|"vehicle state/history reads"| PostgreSQL
+    PostgreSQL -->|"transactional NOTIFY after commit / LISTEN"| API
+    API -->|"SSE invalidations through Nginx"| Browser
     Alembic["Alembic migrations"] -.->|"schema changes"| PostgreSQL
     Prometheus["Prometheus"] -->|"scrape GET /metrics"| API
     Prometheus -->|"scrape consumer metrics"| Consumer
@@ -197,7 +199,7 @@ The CLI accepts `--url`, `--vehicles`, and `--interval` (seconds). Errors and re
 
 ## Fleet dashboard
 
-The React + TypeScript frontend reads vehicle state and history from `GET /vehicles` and `GET /vehicles/{vehicle_id}/telemetry`. It polls every five seconds, displays loading/error/empty states, and plots timestamped battery and temperature history. The client classifies IDs beginning with `BENCH-` (case-insensitive) as benchmark vehicles; this is a documented naming convention, not an API field. The default source is non-benchmark vehicles when present, otherwise the dashboard falls back to all vehicles with an explanation.
+The React + TypeScript frontend reads vehicle state and history from `GET /vehicles` and `GET /vehicles/{vehicle_id}/telemetry`. It refreshes on SSE invalidations and reconciles every five seconds, displays loading/error/empty states, and plots timestamped battery and temperature history. The client classifies IDs beginning with `BENCH-` (case-insensitive) as benchmark vehicles; this is a documented naming convention, not an API field. The default source is non-benchmark vehicles when present, otherwise the dashboard falls back to all vehicles with an explanation.
 
 For frontend development outside Docker, start the Compose backend first:
 
@@ -305,6 +307,6 @@ Benchmark tests use the `unittest` command in the benchmark section. GitHub Acti
 - Redpanda decouples API acceptance from database persistence. A single local broker is easy to run but is neither highly available nor a production Kafka deployment.
 - PostgreSQL stores event history and a separately maintained latest-state row. Kafka offsets are committed only after persistence, so restarts can replay records; database idempotency prevents duplicate history rows but processing is not exactly once.
 - A broker-acknowledged request may later be rejected by the consumer for an event ID conflict or invalid broker record. The rejection is logged and stored, but the client has no delivery-status query endpoint.
-- The dashboard uses five-second polling instead of a persistent stream, keeping the browser and backend integration simple.
+- The dashboard uses SSE invalidations with five-second reconciliation polling. See [live telemetry design](docs/live-telemetry.md) for delivery semantics and isolated tests.
 - The benchmark is intentionally loopback-only, bounded, and small enough for local testing. Its writes are not automatically cleaned up.
 - Docker Compose provides a convenient single-host development stack. It does not provide production secrets management, TLS ingress, alerting, horizontal scaling, or high availability.

@@ -1,7 +1,7 @@
 import type { TelemetryEvent, VehicleState } from "./types";
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
-const API_BASE_URL = (configuredBaseUrl || "/api").replace(/\/+$/, "");
+export const API_BASE_URL = (configuredBaseUrl || "/api").replace(/\/+$/, "");
 
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   let response: Response;

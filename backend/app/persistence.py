@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -13,7 +14,9 @@ from app.schemas import TelemetryCreate
 
 class EventIdConflict(Exception):
     def __init__(self, event_id: str) -> None:
-        super().__init__(f"event_id '{event_id}' was already used for a different event")
+        super().__init__(
+            f"event_id '{event_id}' was already used for a different event"
+        )
         self.event_id = event_id
 
 
@@ -73,7 +76,9 @@ def _get_or_create_vehicle(db: Session, payload: TelemetryCreate) -> Vehicle:
 
 
 def persist_telemetry(db: Session, payload: TelemetryCreate) -> PersistenceResult:
-    existing = db.scalar(select(TelemetryEvent).where(TelemetryEvent.event_id == payload.event_id))
+    existing = db.scalar(
+        select(TelemetryEvent).where(TelemetryEvent.event_id == payload.event_id)
+    )
     if existing is not None:
         if not _matches_event(existing, payload):
             raise EventIdConflict(payload.event_id)
@@ -100,10 +105,19 @@ def persist_telemetry(db: Session, payload: TelemetryCreate) -> PersistenceResul
             vehicle.fault_code = payload.fault_code
             vehicle.last_updated = payload.timestamp
 
+        # NOTIFY is delivered by PostgreSQL only when this transaction commits.
+        # Identical retries return above; out-of-order history still invalidates reads.
+        if db.get_bind().dialect.name == "postgresql":
+            db.execute(
+                text("SELECT pg_notify('waypoint_vehicle_changes', :payload)"),
+                {"payload": json.dumps({"vehicle_id": payload.vehicle_id})},
+            )
         db.commit()
     except IntegrityError:
         db.rollback()
-        existing = db.scalar(select(TelemetryEvent).where(TelemetryEvent.event_id == payload.event_id))
+        existing = db.scalar(
+            select(TelemetryEvent).where(TelemetryEvent.event_id == payload.event_id)
+        )
         if existing is None:
             raise
         if not _matches_event(existing, payload):

@@ -63,6 +63,9 @@ jobs:
         working-directory: backend
         run: pytest -q
 
+      - name: Run isolated SSE acceptance test
+        run: python backend/tests/sse_integration.py
+
       - name: Run isolated Kafka ingestion smoke test
         run: python backend/tests/reliability.py --scenario quick
 

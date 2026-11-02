@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getVehicleTelemetry, getVehicles } from "./api";
+import { subscribeToVehicles } from "./liveUpdates";
 import { defaultFleetSource, isBenchmarkVehicle } from "./fleet";
 import type { TelemetryEvent, VehicleState } from "./types";
 
@@ -31,8 +32,36 @@ export function useFleetData(): FleetData {
     let active = true;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
+    let inFlight = false;
+    let pending = false;
+    let lastStarted = 0;
+    let updateTimer: ReturnType<typeof setTimeout> | undefined;
+    const requestRefresh = (): void => {
+      if (!active) return;
+      if (inFlight) {
+        pending = true;
+        return;
+      }
+      if (updateTimer !== undefined) return;
+      // Coalesce bursts and bound refresh frequency to one start/second.
+      updateTimer = setTimeout(
+        () => {
+          updateTimer = undefined;
+          void refresh();
+        },
+        Math.max(0, 1000 - (Date.now() - lastStarted)),
+      );
+    };
 
     const refresh = async (): Promise<void> => {
+      if (!active || inFlight) return;
+      if (timeout !== undefined) clearTimeout(timeout);
+      if (updateTimer !== undefined) {
+        clearTimeout(updateTimer);
+        updateTimer = undefined;
+      }
+      inFlight = true;
+      lastStarted = Date.now();
       controller = new AbortController();
       try {
         const latestVehicles = await getVehicles(controller.signal);
@@ -62,22 +91,33 @@ export function useFleetData(): FleetData {
         setError(null);
         setLastUpdated(new Date());
       } catch (caught) {
-        if (!active || (caught instanceof DOMException && caught.name === "AbortError")) {
+        if (
+          !active ||
+          (caught instanceof DOMException && caught.name === "AbortError")
+        ) {
           return;
         }
         setError(
           caught instanceof Error ? caught.message : "The API request failed.",
         );
       } finally {
+        inFlight = false;
         if (active) {
           setLoading(false);
           timeout = setTimeout(() => void refresh(), POLL_INTERVAL_MS);
+          if (pending) {
+            pending = false;
+            requestRefresh();
+          }
         }
       }
     };
 
     void refresh();
+    const unsubscribe = subscribeToVehicles(requestRefresh);
     return () => {
+      unsubscribe();
+      if (updateTimer !== undefined) clearTimeout(updateTimer);
       active = false;
       if (timeout !== undefined) clearTimeout(timeout);
       controller?.abort();
