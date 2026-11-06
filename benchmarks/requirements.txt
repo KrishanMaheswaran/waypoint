@@ -1,0 +1,2 @@
+# Install backend/requirements.txt first for httpx, psycopg and metric parsing.
+matplotlib==3.10.7

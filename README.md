@@ -217,7 +217,19 @@ Prometheus scrapes `backend:8000/metrics` and the consumer metrics endpoint on p
 
 Sign in to Grafana using the local credentials configured through `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` in `.env`. The provisioned **Waypoint API** dashboard is available at http://127.0.0.1:3000/d/waypoint-api/waypoint-api and shows HTTP request rate, p50/p95 request latency, HTTP 4xx/5xx rate, and telemetry ingestion rate. Dashboard rate queries use a five-minute window; allow time and traffic for them to become informative. Histogram quantiles are estimates from configured buckets. This stack provides basic local observability, not alerting or high availability.
 
-## Telemetry ingestion benchmarks
+## Isolated end-to-end benchmarks (Milestone 8B)
+
+The [isolated performance suite](benchmarks/methodology.md) measures broker-acknowledged HTTP ingestion, eventual PostgreSQL persistence, consumer lag, proxied SSE delivery, browser snapshot recovery, and container resources. It creates its own disposable Compose project and derives its endpoints from owned container labels; it cannot accept a development target URL. It does not change ingestion semantics or require extra runtime services.
+
+```bash
+.venv312/bin/python -m pip install -r backend/requirements.txt -r benchmarks/requirements.txt
+.venv312/bin/python -m benchmarks.performance --output /private/tmp/m8b-results.json
+.venv312/bin/python -m benchmarks.report_performance --input /private/tmp/m8b-results.json --output /private/tmp/m8b-report
+```
+
+See the [measured local report](benchmarks/results/m8b-local/report.md) for actual scenario results, charts, environment, integrity checks, and limitations. Persistence observation includes polling delay; HTTP acknowledgement is not database completion. Browser recovery is measured separately and is not insertion-to-render latency. The suite uses Python/httpx for controlled load; C++ generation speed is not measured. Nothing is committed, pushed, or deployed by these commands.
+
+## Historical ingestion benchmark tool and synchronous results
 
 [`benchmarks/run_benchmark.py`](benchmarks/run_benchmark.py) is a standalone Python 3.12 tool using asynchronous `httpx` requests. It generates schema-valid events with run-scoped `BENCH-...` vehicle IDs and unique event IDs. Requests have a bounded semaphore and connection pool; concurrency is capped at 32 and measured event count at 1,000. The default target is `http://127.0.0.1:8000`; only plain HTTP loopback targets are accepted. It does not retry failed requests.
 
@@ -234,7 +246,7 @@ python3.12 benchmarks/run_benchmark.py --base-url http://127.0.0.1:8000 --events
 
 ### Results and limitations
 
-The values below are historical local measurements reported by the project owner, from before the Kafka-backed Milestone 7A ingestion path. They were not rerun or independently verified for this documentation update and do not measure broker-acknowledgment performance. Each value represents one local run, not a repeated or statistically sampled result. No new load run was performed because benchmark events are written to the persistent PostgreSQL database.
+The values below are historical local measurements reported by the project owner, from before the Kafka-backed Milestone 7A ingestion path. They were not rerun or independently verified for this documentation update and do not measure broker-acknowledgment performance. Each value represents one local run, not a repeated or statistically sampled result. Those historical runs targeted persistent PostgreSQL storage; the Milestone 8B results linked above use a separate disposable stack.
 
 | Events | Concurrency | Successful throughput (events/s) | p50 latency | p95 latency | p99 latency |
 |---:|---:|---:|---:|---:|---:|
@@ -308,5 +320,5 @@ Benchmark tests use the `unittest` command in the benchmark section. GitHub Acti
 - PostgreSQL stores event history and a separately maintained latest-state row. Kafka offsets are committed only after persistence, so restarts can replay records; database idempotency prevents duplicate history rows but processing is not exactly once.
 - A broker-acknowledged request may later be rejected by the consumer for an event ID conflict or invalid broker record. The rejection is logged and stored, but the client has no delivery-status query endpoint.
 - The dashboard uses SSE invalidations with five-second reconciliation polling. See [live telemetry design](docs/live-telemetry.md) for delivery semantics and isolated tests.
-- The benchmark is intentionally loopback-only, bounded, and small enough for local testing. Its writes are not automatically cleaned up.
+- The historical benchmark tool is loopback-only and writes to its supplied target. The Milestone 8B suite instead owns an isolated disposable stack with bounded load and scoped cleanup.
 - Docker Compose provides a convenient single-host development stack. It does not provide production secrets management, TLS ingress, alerting, horizontal scaling, or high availability.
